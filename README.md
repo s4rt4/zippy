@@ -3,8 +3,22 @@
 > Archive manager untuk Linux — seringan & seresponsif WinRAR, dengan context
 > menu klik-kanan yang kaya. Ditulis dengan **Rust + GTK4 / libadwaita**.
 
-**Status:** Sprint 0 — *baseline & scaffold*. Belum fungsional; window kosong
-untuk kalibrasi performa + kerangka workspace.
+**Status:** v0.1 (Sprint 1-3) sedang berjalan — **core engine native sudah
+berfungsi & teruji**. Frontend GTK4 masih window kosong (v0.2).
+
+### Format yang sudah berfungsi di core
+
+| Format | List | Extract | Compress | Backend |
+|--------|:----:|:-------:|:--------:|---------|
+| ZIP (+AES-256 / ZipCrypto) | ✓ | ✓ | ✓ | native (`zip`) |
+| TAR, TAR.GZ/BZ2/XZ/ZST | ✓ | ✓ | ✓ | native (`tar`+codec) |
+| GZ/BZ2/XZ/ZST (single file) | ✓ | ✓ | ✓ | native |
+| 7Z | ✓ | ✓ | ✓ | subprocess `7z` |
+| RAR | ✓ | ✓ | — | subprocess `unrar` (extract only) |
+
+Semua jalur extract melewati guard **Zip Slip** + **zip bomb**. Deteksi format
+berbasis **magic bytes** (berlapis untuk `.tar.*`). 22 unit/round-trip test hijau
+(`cargo test -p zippy-core`).
 
 ## Arsitektur
 
@@ -67,8 +81,8 @@ sebagai **arah**, bukan gerbang kelulusan rilis. Investigasi pengurangan memori
 
 | Versi | Fokus | Sprint |
 |-------|-------|--------|
-| Sprint 0 | Baseline + scaffold workspace | **(ini)** |
-| v0.1 | Core MVP: format detection, ZIP/TAR native, 7Z/RAR subprocess, safety, fuzzing | 1–3 |
+| Sprint 0 | Baseline + scaffold workspace | ✅ |
+| v0.1 | Core MVP: format detection, ZIP/TAR native, 7Z/RAR subprocess, safety, fuzzing | **🚧 (ini)** |
 | v0.2 | GTK4 basic: AdwApplicationWindow, GtkColumnView, extract/compress | 4–5 |
 | v0.3 | GTK4 polish: drag & drop, password dialog, cancel, MIME handler | 6–7 |
 | v0.4 | Context menu: verb CLI, Nautilus/Dolphin/Thunar | 8–9 |

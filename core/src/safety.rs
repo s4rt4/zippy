@@ -14,6 +14,9 @@ use crate::error::{Error, Result};
 pub const DEFAULT_MAX_RATIO: u64 = 100;
 /// Batas ukuran total output default (bytes). 0 = tanpa batas.
 pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 10 * 1024 * 1024 * 1024; // 10 GiB
+/// Rasio baru ditegakkan setelah output melewati ambang ini. Mencegah false
+/// positive pada file kecil yang sangat kompresibel (mis. 4KB byte nol).
+pub const DEFAULT_RATIO_FLOOR_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
 
 /// Gabungkan `dest` dengan path entry archive secara aman.
 ///
@@ -52,6 +55,7 @@ pub fn safe_join(dest: &Path, entry: &str) -> Result<PathBuf> {
 pub struct DecompressionGuard {
     max_ratio: u64,
     max_total: u64,
+    ratio_floor: u64,
     input_bytes: u64,
     output_bytes: u64,
 }
@@ -61,6 +65,7 @@ impl DecompressionGuard {
         Self {
             max_ratio: DEFAULT_MAX_RATIO,
             max_total: DEFAULT_MAX_TOTAL_BYTES,
+            ratio_floor: DEFAULT_RATIO_FLOOR_BYTES,
             input_bytes,
             output_bytes: 0,
         }
@@ -73,8 +78,12 @@ impl DecompressionGuard {
         if self.max_total != 0 && self.output_bytes > self.max_total {
             return Err(Error::DecompressionLimit);
         }
-        // Rasio hanya bermakna bila input tidak nol.
-        if self.input_bytes > 0 && self.output_bytes / self.input_bytes > self.max_ratio {
+        // Rasio hanya ditegakkan setelah output cukup besar (di atas floor) —
+        // file kecil yang sangat kompresibel bukan ancaman.
+        if self.output_bytes >= self.ratio_floor
+            && self.input_bytes > 0
+            && self.output_bytes / self.input_bytes > self.max_ratio
+        {
             return Err(Error::DecompressionLimit);
         }
         Ok(())
@@ -121,6 +130,7 @@ mod tests {
     fn guard_trips_on_ratio() {
         let mut g = DecompressionGuard::new(10);
         g.max_ratio = 100;
+        g.ratio_floor = 0; // uji logika rasio murni tanpa floor
         // 10 * 100 = 1000 (rasio tepat 100) masih ok; di atasnya → bomb.
         assert!(g.add_output(1000).is_ok());
         assert!(g.add_output(100).is_err()); // total 1100 → rasio 110 > 100
