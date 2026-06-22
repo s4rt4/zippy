@@ -1,0 +1,13 @@
+<!--
+  Thunar Custom Action — Planning Doc §6.7.
+  Merge entry ini ke ~/.config/Thunar/uca.xml (JANGAN timpa file yang ada).
+  Kondisi berbasis pattern; tidak ada submenu, label statis.
+-->
+<action>
+  <icon>zippy</icon>
+  <name>Extract Here (Zippy)</name>
+  <command>zippy --extract-here %F</command>
+  <description>Extract archive di sini</description>
+  <patterns>*.zip;*.tar;*.tar.*;*.7z;*.rar;*.gz;*.bz2;*.xz;*.zst</patterns>
+  <directories/>
+</action>

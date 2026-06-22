@@ -1,0 +1,18 @@
+[package]
+name    = "zippy-core"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+description = "Zippy core — pure Rust archive engine (zero UI dependency)"
+
+[lib]
+name = "zippy_core"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace  = true
+tracing.workspace = true
+
+# Format crates (zip, tar, flate2, bzip2, xz2, zstd) ditambahkan di v0.1 (Sprint 1-3)
+# saat modul formats/extract/archive diimplementasikan. Sprint 0 hanya scaffold.

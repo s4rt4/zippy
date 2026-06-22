@@ -1,0 +1,23 @@
+# Dolphin ServiceMenu — pasang ke ~/.local/share/kio/servicemenus/ (KDE6/Plasma 6)
+# Planning Doc §6.6. Label statis; perilaku tetap menghitung nama folder via CLI.
+[Desktop Entry]
+Type=Service
+MimeType=application/zip;application/x-tar;application/x-7z-compressed;application/x-rar;application/gzip;application/x-xz;application/zstd;
+Actions=ExtractHere;ExtractTo;ExtractEach;Test;
+X-KDE-Submenu=Zippy
+
+[Desktop Action ExtractHere]
+Name=Extract Here
+Exec=zippy --extract-here %F
+
+[Desktop Action ExtractTo]
+Name=Extract To...
+Exec=zippy --extract-to %F
+
+[Desktop Action ExtractEach]
+Name=Extract Each to Separate Folder
+Exec=zippy --extract-each %F
+
+[Desktop Action Test]
+Name=Test Integrity
+Exec=zippy --test %F

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Zippy
+Comment=Archive manager
+Exec=zippy %F
+Icon=zippy
+Terminal=false
+MimeType=application/zip;application/x-tar;application/x-7z-compressed;application/x-rar;application/gzip;application/x-bzip2;application/x-xz;application/zstd;
+Categories=Utility;Archiving;
