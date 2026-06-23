@@ -15,6 +15,7 @@ zippy-core = { path = "../core" }
 
 gtk4       = { version = "0.9", package = "gtk4", features = ["v4_10"] }
 libadwaita = { version = "0.7", package = "libadwaita", features = ["v1_4"] }
+async-channel = "2"
 
 anyhow.workspace             = true
 tracing.workspace            = true
