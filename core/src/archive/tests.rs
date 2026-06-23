@@ -127,6 +127,45 @@ fn zip_aes256_password_roundtrip() {
 }
 
 #[test]
+fn tar_compress_emits_per_file_progress() {
+    use crate::progress::{ProgressEvent, ProgressSink};
+    use std::sync::Mutex;
+
+    // Sink yang mengumpulkan nama berkas dari FileProcessed + total dari Started.
+    #[derive(Default)]
+    struct CollectSink {
+        names: Mutex<Vec<String>>,
+        total: Mutex<usize>,
+    }
+    impl ProgressSink for CollectSink {
+        fn emit(&self, ev: ProgressEvent) {
+            match ev {
+                ProgressEvent::Started { total_files } => *self.total.lock().unwrap() = total_files,
+                ProgressEvent::FileProcessed { name, .. } => {
+                    self.names.lock().unwrap().push(name)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src); // a.txt + sub/ (berisi b.txt) → 2 berkas
+    let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+
+    let archive = tmp.path().join("out.tar");
+    let sink = CollectSink::default();
+    compress(&src_refs, &archive, None, &CancelToken::new(), &sink).unwrap();
+
+    let names = sink.names.lock().unwrap();
+    assert_eq!(*sink.total.lock().unwrap(), 2, "total_files harus jumlah berkas");
+    assert_eq!(names.len(), 2, "harus ada FileProcessed per berkas: {names:?}");
+    assert!(names.iter().any(|n| n.contains("a.txt")), "{names:?}");
+    assert!(names.iter().any(|n| n.contains("b.txt")), "{names:?}");
+}
+
+#[test]
 fn extract_precancelled_returns_cancelled() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");

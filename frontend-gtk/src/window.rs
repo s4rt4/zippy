@@ -7,16 +7,17 @@
 //! `glib::spawn_future_local` (lihat [`crate::progress`]).
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
 use gtk4 as gtk;
+use gtk4::gdk;
 use gtk4::gio;
 use gtk4::glib;
 use libadwaita as adw;
-use zippy_core::{CancelToken, Error, ProgressEvent};
+use zippy_core::{ArchiveKind, CancelToken, Error, ProgressEvent};
 
 use crate::file_list::{self, FileListView};
 use crate::progress::ChannelSink;
@@ -160,6 +161,9 @@ pub fn build_ui(app: &adw::Application) {
         let ui = ui.clone();
         move |_| compress_dialog(&ui)
     });
+
+    setup_drop_target(&ui);
+    setup_context_menu(&ui);
 
     window.present();
 
@@ -344,45 +348,55 @@ fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, password: Option<St
     });
 }
 
-/// Dialog password (AdwMessageDialog + GtkPasswordEntry); pada konfirmasi,
-/// memanggil ulang [`run_extract`] dengan password yang dimasukkan.
-fn prompt_password(ui: &Rc<Ui>, archive: &PathBuf, dest: &PathBuf) {
+/// Dialog password generik (AdwMessageDialog + GtkPasswordEntry). `on_ok`
+/// dipanggil dengan `Some(pw)` bila diisi, atau `None` bila kosong (caller yang
+/// memutuskan arti kosong: batal vs tanpa-enkripsi).
+fn ask_password<F>(ui: &Rc<Ui>, heading: &str, body: &str, ok_label: &str, on_ok: F)
+where
+    F: Fn(&Rc<Ui>, Option<String>) + 'static,
+{
     let entry = gtk::PasswordEntry::builder()
         .show_peek_icon(true)
         .activates_default(true)
         .build();
 
-    let name = archive
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let dialog = adw::MessageDialog::new(
-        Some(&ui.window),
-        Some("Archive Terenkripsi"),
-        Some(&format!("Masukkan password untuk \"{name}\".")),
-    );
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some(heading), Some(body));
     dialog.set_extra_child(Some(&entry));
     dialog.add_response("cancel", "Batal");
-    dialog.add_response("ok", "Buka");
+    dialog.add_response("ok", ok_label);
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("cancel");
 
     let ui = ui.clone();
-    let archive = archive.clone();
-    let dest = dest.clone();
     dialog.connect_response(None, move |_, resp| {
         if resp != "ok" {
             return;
         }
         let pw = entry.text().to_string();
-        if pw.is_empty() {
-            show_toast(&ui, "Password kosong");
-            return;
-        }
-        run_extract(&ui, archive.clone(), dest.clone(), Some(pw));
+        on_ok(&ui, if pw.is_empty() { None } else { Some(pw) });
     });
     dialog.present();
+}
+
+/// Minta password (wajib) untuk meng-extract archive terenkripsi, lalu retry.
+fn prompt_password(ui: &Rc<Ui>, archive: &Path, dest: &Path) {
+    let name = archive
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let archive = archive.to_path_buf();
+    let dest = dest.to_path_buf();
+    ask_password(
+        ui,
+        "Archive Terenkripsi",
+        &format!("Masukkan password untuk \"{name}\"."),
+        "Buka",
+        move |ui, pw| match pw {
+            Some(pw) => run_extract(ui, archive.clone(), dest.clone(), Some(pw)),
+            None => show_toast(ui, "Password kosong"),
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -415,13 +429,33 @@ fn choose_output(ui: &Rc<Ui>, inputs: Vec<PathBuf>) {
     save.save(Some(&win), gio::Cancellable::NONE, move |res| {
         if let Ok(file) = res {
             if let Some(dest) = file.path() {
-                run_compress(&ui, inputs.clone(), dest);
+                compress_to(&ui, inputs.clone(), dest);
             }
         }
     });
 }
 
-fn run_compress(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
+/// Lanjut ke compress; bila format `dest` mendukung enkripsi (zip/7z), tawarkan
+/// dialog password lebih dulu (kosong = tanpa enkripsi).
+fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
+    let supports_pw = matches!(
+        zippy_core::archive::kind_from_ext(&dest),
+        Some(ArchiveKind::Zip | ArchiveKind::SevenZip)
+    );
+    if !supports_pw {
+        run_compress(ui, inputs, dest, None);
+        return;
+    }
+    ask_password(
+        ui,
+        "Lindungi Archive",
+        "Masukkan password untuk enkripsi (kosongkan untuk tanpa password).",
+        "Buat",
+        move |ui, pw| run_compress(ui, inputs.clone(), dest.clone(), pw),
+    );
+}
+
+fn run_compress(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf, password: Option<String>) {
     let cancel = CancelToken::new();
     *ui.cancel.borrow_mut() = Some(cancel.clone());
 
@@ -430,8 +464,8 @@ fn run_compress(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
     std::thread::spawn(move || {
         let res = {
             let sink = ChannelSink::new(tx_ev);
-            let refs: Vec<&std::path::Path> = inputs.iter().map(|p| p.as_path()).collect();
-            zippy_core::archive::compress(&refs, &dest, None, &cancel, &sink)
+            let refs: Vec<&Path> = inputs.iter().map(|p| p.as_path()).collect();
+            zippy_core::archive::compress(&refs, &dest, password.as_deref(), &cancel, &sink)
         };
         let _ = tx_done.send_blocking(res);
     });
@@ -509,6 +543,99 @@ fn collect_paths(files: &gio::ListModel) -> Vec<PathBuf> {
 
 fn show_toast(ui: &Ui, msg: &str) {
     ui.toast.add_toast(adw::Toast::new(msg));
+}
+
+// ---------------------------------------------------------------------------
+// Drag-and-drop & context menu
+// ---------------------------------------------------------------------------
+
+/// Drop berkas ke jendela: satu archive dikenal → buka; selain itu → kompres.
+fn setup_drop_target(ui: &Rc<Ui>) {
+    let target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    target.connect_drop({
+        let ui = ui.clone();
+        move |_, value, _, _| {
+            let Ok(list) = value.get::<gdk::FileList>() else {
+                return false;
+            };
+            let paths: Vec<PathBuf> = list.files().iter().filter_map(|f| f.path()).collect();
+            if paths.is_empty() {
+                return false;
+            }
+            handle_drop(&ui, paths);
+            true
+        }
+    });
+    ui.list.widget.add_controller(target);
+}
+
+fn handle_drop(ui: &Rc<Ui>, paths: Vec<PathBuf>) {
+    let single_archive = paths.len() == 1
+        && paths[0].is_file()
+        && zippy_core::archive::kind_from_ext(&paths[0]).is_some();
+    if single_archive {
+        load_archive(ui, paths.into_iter().next().unwrap());
+    } else {
+        // Banyak berkas / non-archive → buat archive baru dari berkas yang di-drop.
+        choose_output(ui, paths);
+    }
+}
+
+/// Menu klik-kanan pada daftar isi (aksi tingkat-archive). Cikal-bakal context
+/// menu kaya yang jadi pembeda Zippy (Planning Doc §4) — diperluas nanti.
+fn setup_context_menu(ui: &Rc<Ui>) {
+    let popover = gtk::Popover::builder().has_arrow(false).build();
+    popover.set_parent(&ui.list.widget);
+
+    let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let extract = menu_button("Extract Semua…");
+    let close = menu_button("Tutup Archive");
+    menu.append(&extract);
+    menu.append(&close);
+    popover.set_child(Some(&menu));
+
+    extract.connect_clicked({
+        let ui = ui.clone();
+        let popover = popover.clone();
+        move |_| {
+            popover.popdown();
+            extract_dialog(&ui);
+        }
+    });
+    close.connect_clicked({
+        let ui = ui.clone();
+        let popover = popover.clone();
+        move |_| {
+            popover.popdown();
+            close_archive(&ui);
+        }
+    });
+
+    let gesture = gtk::GestureClick::builder()
+        .button(gdk::BUTTON_SECONDARY)
+        .build();
+    gesture.connect_pressed(move |_, _, x, y| {
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.popup();
+    });
+    ui.list.widget.add_controller(gesture);
+}
+
+fn menu_button(label: &str) -> gtk::Button {
+    let b = gtk::Button::builder().label(label).build();
+    b.add_css_class("flat");
+    if let Some(child) = b.child().and_downcast::<gtk::Label>() {
+        child.set_xalign(0.0);
+    }
+    b
+}
+
+/// Tutup archive: kosongkan daftar & reset state.
+fn close_archive(ui: &Rc<Ui>) {
+    ui.list.store.remove_all();
+    *ui.current.borrow_mut() = None;
+    ui.extract_btn.set_sensitive(false);
+    ui.status.set_text("Belum ada archive terbuka");
 }
 
 /// Mode benchmark Sprint 0 (dipakai scripts/measure.sh): bila `ZIPPY_BENCH`

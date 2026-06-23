@@ -327,7 +327,7 @@ fn compress_zip(
     }
 
     progress.emit(ProgressEvent::Started {
-        total_files: inputs.len(),
+        total_files: count_files(inputs),
     });
 
     let mut index = 0;
@@ -416,38 +416,38 @@ fn compress_tar(
 ) -> Result<()> {
     let start = Instant::now();
     progress.emit(ProgressEvent::Started {
-        total_files: inputs.len(),
+        total_files: count_files(inputs),
     });
 
     let w = BufWriter::new(File::create(dest)?);
     match kind {
         ArchiveKind::Tar => {
             let mut b = tar::Builder::new(w);
-            write_tar_entries(&mut b, inputs, cancel)?;
+            write_tar_entries(&mut b, inputs, cancel, progress)?;
             b.finish()?;
         }
         ArchiveKind::TarGz => {
             let enc = GzEncoder::new(w, flate2::Compression::default());
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs, cancel)?;
+            write_tar_entries(&mut b, inputs, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarBz2 => {
             let enc = bzip2::write::BzEncoder::new(w, bzip2::Compression::default());
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs, cancel)?;
+            write_tar_entries(&mut b, inputs, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarXz => {
             let enc = xz2::write::XzEncoder::new(w, 6);
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs, cancel)?;
+            write_tar_entries(&mut b, inputs, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarZst => {
             let enc = zstd::stream::write::Encoder::new(w, 3)?;
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs, cancel)?;
+            write_tar_entries(&mut b, inputs, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         _ => return Err(Error::UnsupportedFormat),
@@ -459,25 +459,68 @@ fn compress_tar(
     Ok(())
 }
 
+/// Tulis tiap input ke builder tar. Direktori ditelusuri manual (bukan
+/// `append_dir_all`) supaya tiap berkas memancarkan `FileProcessed` dan Cancel
+/// terdeteksi per-entry, bukan hanya antar-input.
 fn write_tar_entries<W: Write>(
     builder: &mut tar::Builder<W>,
     inputs: &[&Path],
     cancel: &CancelToken,
+    progress: &dyn ProgressSink,
 ) -> Result<()> {
+    let mut index = 0;
     for input in inputs {
-        // Granularitas per-input: `append_dir_all` berjalan opaque, jadi Cancel
-        // baru terdeteksi di batas antar-input (cukup untuk banyak input kecil).
-        cancel.check()?;
         let name = input
             .file_name()
             .ok_or_else(|| Error::Other(format!("input tanpa nama: {}", input.display())))?;
-        if input.is_dir() {
-            builder.append_dir_all(name, input)?;
-        } else {
-            builder.append_path_with_name(input, name)?;
-        }
+        add_tar_entry(builder, input, Path::new(name), cancel, progress, &mut index)?;
     }
     Ok(())
+}
+
+/// Tambah satu path (file atau dir) ke tar di bawah nama `arc`, rekursif untuk
+/// direktori. `index` naik tiap berkas (bukan direktori).
+fn add_tar_entry<W: Write>(
+    builder: &mut tar::Builder<W>,
+    disk: &Path,
+    arc: &Path,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+    index: &mut usize,
+) -> Result<()> {
+    cancel.check()?;
+    // `append_path_with_name` menambah entry dir (header saja) atau file+isi.
+    builder.append_path_with_name(disk, arc)?;
+
+    if disk.is_dir() {
+        let mut entries: Vec<_> = fs::read_dir(disk)?.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.path());
+        for e in entries {
+            add_tar_entry(builder, &e.path(), &arc.join(e.file_name()), cancel, progress, index)?;
+        }
+    } else {
+        progress.emit(ProgressEvent::FileProcessed {
+            name: arc.to_string_lossy().into_owned(),
+            index: *index,
+        });
+        *index += 1;
+    }
+    Ok(())
+}
+
+/// Hitung jumlah berkas (bukan direktori) di bawah `inputs`, rekursif. Dipakai
+/// untuk `total_files` agar progress bar compress determinate.
+fn count_files(inputs: &[&Path]) -> usize {
+    fn rec(p: &Path) -> usize {
+        if p.is_dir() {
+            fs::read_dir(p)
+                .map(|rd| rd.filter_map(|e| e.ok()).map(|e| rec(&e.path())).sum())
+                .unwrap_or(0)
+        } else {
+            1
+        }
+    }
+    inputs.iter().map(|p| rec(p)).sum()
 }
 
 // ---------------------------------------------------------------------------
