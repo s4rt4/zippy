@@ -127,6 +127,48 @@ fn zip_aes256_password_roundtrip() {
 }
 
 #[test]
+fn test_passes_on_valid_zip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let archive = tmp.path().join("ok.zip");
+    compress(&src_refs, &archive, None, &CancelToken::new(), &NullSink).unwrap();
+
+    test(&archive, None, &CancelToken::new(), &NullSink).expect("archive valid harus lulus test");
+}
+
+#[test]
+fn test_detects_corruption() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let archive = tmp.path().join("bad.zip");
+    compress(&src_refs, &archive, None, &CancelToken::new(), &NullSink).unwrap();
+
+    // Potong ekor → central directory rusak → test harus gagal.
+    let data = fs::read(&archive).unwrap();
+    fs::write(&archive, &data[..data.len() - 20]).unwrap();
+    assert!(test(&archive, None, &CancelToken::new(), &NullSink).is_err());
+}
+
+#[test]
+fn extract_entry_single_file_from_zip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let archive = tmp.path().join("e.zip");
+    compress(&src_refs, &archive, None, &CancelToken::new(), &NullSink).unwrap();
+
+    let out_dir = tmp.path().join("view");
+    let out = extract_entry(&archive, "a.txt", &out_dir, None, &CancelToken::new()).unwrap();
+    assert_eq!(fs::read(&out).unwrap(), b"halo dunia\n");
+    assert_eq!(out, out_dir.join("a.txt"));
+}
+
+#[test]
 fn tar_compress_emits_per_file_progress() {
     use crate::progress::{ProgressEvent, ProgressSink};
     use std::sync::Mutex;

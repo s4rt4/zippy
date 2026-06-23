@@ -6,7 +6,7 @@
 
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use flate2::read::GzDecoder;
@@ -244,6 +244,182 @@ pub fn extract_all(
             subprocess::sevenzip_extract(archive, dest, password, cancel, progress)
         }
         ArchiveKind::Rar => subprocess::unrar_extract(archive, dest, password, cancel, progress),
+        _ => Err(Error::UnsupportedFormat),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test (verifikasi integritas)
+// ---------------------------------------------------------------------------
+
+/// Uji integritas seluruh isi `archive` tanpa menulis ke disk. Setiap entry
+/// di-dekompresi penuh (untuk zip, ini sekaligus memverifikasi CRC32). Memancar
+/// progress per-entry dan menghormati Cancel.
+pub fn test(
+    archive: &Path,
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let kind = detect_kind(archive)?;
+    match kind {
+        ArchiveKind::Zip => test_zip(archive, password, cancel, progress),
+        k if k.is_tar_family() => {
+            let input_size = archive.metadata()?.len();
+            let reader = open_tar_reader(archive, k)?;
+            test_tar(reader, input_size, cancel, progress)
+        }
+        ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
+            test_single(archive, kind, cancel, progress)
+        }
+        ArchiveKind::SevenZip => subprocess::sevenzip_test(archive, password, cancel, progress),
+        ArchiveKind::Rar => subprocess::unrar_test(archive, password, cancel, progress),
+        _ => Err(Error::UnsupportedFormat),
+    }
+}
+
+fn test_zip(
+    archive: &Path,
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    let f = File::open(archive)?;
+    let input_size = f.metadata()?.len();
+    let mut ar = zip::ZipArchive::new(BufReader::new(f)).map_err(zip_err)?;
+    let mut guard = DecompressionGuard::new(input_size);
+    let total = ar.len();
+    progress.emit(ProgressEvent::Started { total_files: total });
+
+    for i in 0..total {
+        cancel.check()?;
+        let mut e = match password {
+            Some(pw) => ar.by_index_decrypt(i, pw.as_bytes()).map_err(zip_err)?,
+            None => ar.by_index(i).map_err(zip_err)?,
+        };
+        let name = e.name().to_string();
+        if !e.is_dir() {
+            // Membaca penuh memvalidasi CRC32 (zip crate error bila tak cocok).
+            extract::copy_guarded(&mut e, &mut std::io::sink(), &mut guard, cancel)?;
+        }
+        progress.emit(ProgressEvent::FileProcessed { name, index: i });
+    }
+
+    progress.emit(ProgressEvent::Finished {
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    });
+    Ok(())
+}
+
+fn test_tar<R: Read>(
+    reader: R,
+    input_size: u64,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    let mut guard = DecompressionGuard::new(input_size);
+    let mut ar = tar::Archive::new(reader);
+    progress.emit(ProgressEvent::Started { total_files: 0 });
+
+    let mut index = 0;
+    for entry in ar.entries()? {
+        cancel.check()?;
+        let mut entry = entry?;
+        let name = entry.path()?.to_string_lossy().into_owned();
+        extract::copy_guarded(&mut entry, &mut std::io::sink(), &mut guard, cancel)?;
+        progress.emit(ProgressEvent::FileProcessed { name, index });
+        index += 1;
+    }
+
+    progress.emit(ProgressEvent::Finished {
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    });
+    Ok(())
+}
+
+fn test_single(
+    archive: &Path,
+    kind: ArchiveKind,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    let input_size = archive.metadata()?.len();
+    let f = File::open(archive)?;
+    let mut r: Box<dyn Read> = match kind {
+        ArchiveKind::Gz => Box::new(GzDecoder::new(f)),
+        ArchiveKind::Bz2 => Box::new(bzip2::read::BzDecoder::new(f)),
+        ArchiveKind::Xz => Box::new(xz2::read::XzDecoder::new(f)),
+        ArchiveKind::Zst => Box::new(zstd::stream::read::Decoder::new(f)?),
+        _ => return Err(Error::UnsupportedFormat),
+    };
+    let mut guard = DecompressionGuard::new(input_size);
+    progress.emit(ProgressEvent::Started { total_files: 1 });
+    extract::copy_guarded(&mut r, &mut std::io::sink(), &mut guard, cancel)?;
+    progress.emit(ProgressEvent::Finished {
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    });
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Extract satu entry (untuk View)
+// ---------------------------------------------------------------------------
+
+/// Extract satu entry `name` ke bawah `dest_dir` (mempertahankan path relatif),
+/// kembalikan path file hasil. Dipakai fitur View (buka satu berkas).
+pub fn extract_entry(
+    archive: &Path,
+    name: &str,
+    dest_dir: &Path,
+    password: Option<&str>,
+    cancel: &CancelToken,
+) -> Result<PathBuf> {
+    fs::create_dir_all(dest_dir)?;
+    let kind = detect_kind(archive)?;
+    let mut guard = DecompressionGuard::new(archive.metadata()?.len());
+
+    match kind {
+        ArchiveKind::Zip => {
+            let f = File::open(archive)?;
+            let mut ar = zip::ZipArchive::new(BufReader::new(f)).map_err(zip_err)?;
+            let mut e = match password {
+                Some(pw) => ar.by_name_decrypt(name, pw.as_bytes()).map_err(zip_err)?,
+                None => ar.by_name(name).map_err(zip_err)?,
+            };
+            let out = extract::prepare_dest(dest_dir, name)?;
+            extract::copy_guarded_to_file(&mut e, &out, &mut guard, cancel)?;
+            Ok(out)
+        }
+        k if k.is_tar_family() => {
+            let reader = open_tar_reader(archive, k)?;
+            let mut ar = tar::Archive::new(reader);
+            for entry in ar.entries()? {
+                let mut entry = entry?;
+                let ename = entry.path()?.to_string_lossy().into_owned();
+                if ename == name {
+                    let out = extract::prepare_dest(dest_dir, name)?;
+                    extract::copy_guarded_to_file(&mut entry, &out, &mut guard, cancel)?;
+                    return Ok(out);
+                }
+            }
+            Err(Error::Other(format!("entry tidak ditemukan: {name}")))
+        }
+        ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
+            // Stream tunggal: extract_single menulis ke dest_dir/<nama-output>.
+            extract_single(archive, dest_dir, kind, cancel, &crate::progress::NullSink)?;
+            Ok(dest_dir.join(single_output_name(archive)))
+        }
+        ArchiveKind::SevenZip => {
+            subprocess::sevenzip_extract_entry(archive, name, dest_dir, password, cancel)?;
+            Ok(dest_dir.join(name))
+        }
+        ArchiveKind::Rar => {
+            subprocess::unrar_extract_entry(archive, name, dest_dir, password, cancel)?;
+            Ok(dest_dir.join(name))
+        }
         _ => Err(Error::UnsupportedFormat),
     }
 }

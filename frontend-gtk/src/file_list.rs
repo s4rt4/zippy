@@ -83,16 +83,17 @@ impl EntryObject {
     pub fn is_parent(&self) -> bool {
         self.imp().is_parent.get()
     }
-    fn size(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         self.imp().size.get()
     }
-    fn packed(&self) -> u64 {
+    pub fn packed(&self) -> u64 {
         self.imp().packed.get()
     }
-    fn modified(&self) -> String {
+    pub fn modified(&self) -> String {
         self.imp().modified.borrow().clone()
     }
-    fn crc(&self) -> String {
+    /// CRC32 terformat hex (string kosong bila tak ada).
+    pub fn crc_hex(&self) -> String {
         self.imp().crc.borrow().clone()
     }
 }
@@ -139,7 +140,7 @@ pub fn build() -> FileListView {
         type_label(&e.name(), e.is_dir() || e.is_parent())
     }));
     column_view.append_column(&text_column("Modified", false, false, |e| e.modified()));
-    column_view.append_column(&text_column("CRC32", false, true, |e| e.crc()));
+    column_view.append_column(&text_column("CRC32", false, true, |e| e.crc_hex()));
 
     let widget = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)

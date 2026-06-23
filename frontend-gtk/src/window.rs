@@ -18,7 +18,7 @@ use gtk4::gdk;
 use gtk4::gio;
 use gtk4::glib;
 use libadwaita as adw;
-use zippy_core::{ArchiveKind, CancelToken, Entry, Error, ProgressEvent};
+use zippy_core::{ArchiveKind, CancelToken, Entry, Error, ProgressEvent, ProgressSink};
 
 use crate::file_list::{self, FileListView, Row};
 use crate::progress::ChannelSink;
@@ -35,6 +35,9 @@ struct Ui {
     progress_label: gtk::Label,
     cancel_btn: gtk::Button,
     extract_btn: gtk::Button,
+    search_bar: gtk::SearchBar,
+    /// Filter nama aktif (dari Find); kosong = tampilkan semua.
+    filter: RefCell<String>,
     /// Archive yang sedang dibuka (None bila belum ada).
     current: RefCell<Option<PathBuf>>,
     /// Token operasi yang sedang berjalan (None bila idle).
@@ -96,6 +99,17 @@ pub fn build_ui(app: &adw::Application) {
     // Toolbar: tombol Extract perlu referensi untuk enable/disable.
     let extract_btn = tool_button("archive-extract", "Extract To");
 
+    // Search bar (Find): tersembunyi sampai diaktifkan tombol/menu Find.
+    let search_entry = gtk::SearchEntry::builder()
+        .placeholder_text("Filter berkas di folder ini…")
+        .hexpand(true)
+        .build();
+    let search_bar = gtk::SearchBar::builder()
+        .child(&search_entry)
+        .key_capture_widget(&list.column_view)
+        .build();
+    search_bar.connect_entry(&search_entry);
+
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("Zippy")
@@ -114,6 +128,8 @@ pub fn build_ui(app: &adw::Application) {
         progress_label,
         cancel_btn: cancel_btn.clone(),
         extract_btn: extract_btn.clone(),
+        search_bar: search_bar.clone(),
+        filter: RefCell::new(String::new()),
         current: RefCell::new(None),
         cancel: RefCell::new(None),
         entries: RefCell::new(Vec::new()),
@@ -152,6 +168,7 @@ pub fn build_ui(app: &adw::Application) {
     content.append(&toolbar);
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     content.append(&addr_frame);
+    content.append(&search_bar);
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     content.append(&ui.list.widget);
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -173,6 +190,15 @@ pub fn build_ui(app: &adw::Application) {
         }
     });
 
+    // Find: perbarui filter saat teks pencarian berubah.
+    search_entry.connect_search_changed({
+        let ui = ui.clone();
+        move |e| {
+            *ui.filter.borrow_mut() = e.text().to_string();
+            render(&ui);
+        }
+    });
+
     // Navigasi: double-click / Enter pada baris.
     ui.list.column_view.connect_activate({
         let ui = ui.clone();
@@ -191,7 +217,7 @@ pub fn build_ui(app: &adw::Application) {
                 ui.cwd.borrow_mut().push(obj.name());
                 render(&ui);
             } else {
-                show_toast(&ui, "View berkas belum didukung");
+                view_entry(&ui, &obj);
             }
         }
     });
@@ -219,11 +245,21 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     add_action(&group, "quit", ui, |ui| ui.window.close());
     add_action(&group, "add", ui, compress_dialog);
     add_action(&group, "extract", ui, extract_dialog);
-    add_action(&group, "test", ui, |ui| show_toast(ui, "Test belum didukung"));
+    add_action(&group, "test", ui, test_dialog);
     add_action(&group, "delete", ui, |ui| show_toast(ui, "Delete belum didukung"));
-    add_action(&group, "find", ui, |ui| show_toast(ui, "Find belum didukung"));
+    add_action(&group, "find", ui, toggle_search);
     add_action(&group, "wizard", ui, |ui| show_toast(ui, "Wizard belum didukung"));
     add_action(&group, "about", ui, show_about);
+    // Aksi context menu (beroperasi pada seleksi saat diaktifkan).
+    add_action(&group, "view", ui, view_selected);
+    add_action(&group, "up", ui, |ui| {
+        ui.cwd.borrow_mut().pop();
+        render(ui);
+    });
+    add_action(&group, "open_folder", ui, open_selected_folder);
+    add_action(&group, "extract_sel", ui, extract_selected);
+    add_action(&group, "copy_name", ui, copy_selected_names);
+    add_action(&group, "props", ui, show_properties);
     ui.window.insert_action_group("win", Some(&group));
 
     let menu = gio::Menu::new();
@@ -293,12 +329,12 @@ fn build_toolbar(ui: &Rc<Ui>, extract_btn: &gtk::Button) -> gtk::Box {
     let test = tool_button("dialog-ok-apply", "Test");
     test.connect_clicked({
         let ui = ui.clone();
-        move |_| show_toast(&ui, "Test belum didukung")
+        move |_| test_dialog(&ui)
     });
     let view = tool_button("document-preview-archive", "View");
     view.connect_clicked({
         let ui = ui.clone();
-        move |_| show_toast(&ui, "View belum didukung")
+        move |_| view_selected(&ui)
     });
     let delete = tool_button("archive-remove", "Delete");
     delete.connect_clicked({
@@ -308,7 +344,7 @@ fn build_toolbar(ui: &Rc<Ui>, extract_btn: &gtk::Button) -> gtk::Box {
     let find = tool_button("edit-find", "Find");
     find.connect_clicked({
         let ui = ui.clone();
-        move |_| show_toast(&ui, "Find belum didukung")
+        move |_| toggle_search(&ui)
     });
     let wizard = tool_button("tools-wizard", "Wizard");
     wizard.connect_clicked({
@@ -442,9 +478,13 @@ fn render(ui: &Rc<Ui>) {
         }));
     }
 
+    let filter = ui.filter.borrow().to_lowercase();
     let rows = rows_for_dir(&entries, &cwd);
     let (mut folders, mut files, mut bytes) = (0u64, 0u64, 0u64);
     for r in &rows {
+        if !filter.is_empty() && !r.name.to_lowercase().contains(&filter) {
+            continue;
+        }
         if r.is_dir {
             folders += 1;
         } else {
@@ -543,6 +583,9 @@ fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
                 if let Some(dir) = std::env::var_os("ZIPPY_EXTRACT_TO") {
                     let pw = std::env::var("ZIPPY_PASSWORD").ok();
                     run_extract(&ui, path.clone(), PathBuf::from(dir), pw);
+                }
+                if std::env::var_os("ZIPPY_TEST").is_some() {
+                    run_test(&ui, path.clone(), std::env::var("ZIPPY_PASSWORD").ok());
                 }
             }
             Ok(Err(e)) => {
@@ -860,6 +903,180 @@ fn schedule_dev_cancel(ui: &Rc<Ui>) {
 }
 
 // ---------------------------------------------------------------------------
+// Test (verifikasi integritas)
+// ---------------------------------------------------------------------------
+
+fn test_dialog(ui: &Rc<Ui>) {
+    match ui.current.borrow().clone() {
+        Some(archive) => run_test(ui, archive, None),
+        None => show_toast(ui, "Belum ada archive terbuka"),
+    }
+}
+
+fn run_test(ui: &Rc<Ui>, archive: PathBuf, password: Option<String>) {
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+
+    let (tx_ev, rx_ev) = async_channel::unbounded();
+    let (tx_done, rx_done) = async_channel::bounded(1);
+    let worker_archive = archive.clone();
+    let worker_pw = password.clone();
+    std::thread::spawn(move || {
+        let res = {
+            let sink = ChannelSink::new(tx_ev);
+            zippy_core::archive::test(&worker_archive, worker_pw.as_deref(), &cancel, &sink)
+        };
+        let _ = tx_done.send_blocking(res);
+    });
+
+    ui.revealer.set_reveal_child(true);
+    ui.cancel_btn.set_sensitive(true);
+    ui.bar.set_fraction(0.0);
+    ui.progress_label.set_text("Menguji…");
+    schedule_dev_cancel(ui);
+
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let mut total = 0usize;
+        while let Ok(ev) = rx_ev.recv().await {
+            match ev {
+                ProgressEvent::Started { total_files } => total = total_files,
+                ProgressEvent::FileProcessed { name, index } => {
+                    if total > 0 {
+                        ui.bar.set_fraction((index + 1) as f64 / total as f64);
+                    } else {
+                        ui.bar.pulse();
+                    }
+                    ui.progress_label.set_text(&name);
+                }
+                _ => {}
+            }
+        }
+
+        ui.revealer.set_reveal_child(false);
+        *ui.cancel.borrow_mut() = None;
+        match rx_done.recv().await {
+            Ok(Ok(())) => {
+                show_toast(&ui, "Test selesai — tidak ada kesalahan ditemukan");
+                tracing::info!("test ok");
+            }
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Test dibatalkan"),
+            Ok(Err(Error::Password)) => {
+                let archive = archive.clone();
+                ask_password(
+                    &ui,
+                    "Archive Terenkripsi",
+                    "Masukkan password untuk menguji.",
+                    "Uji",
+                    move |ui, pw| match pw {
+                        Some(pw) => run_test(ui, archive.clone(), Some(pw)),
+                        None => show_toast(ui, "Password kosong"),
+                    },
+                );
+            }
+            Ok(Err(e)) => show_toast(&ui, &format!("Test GAGAL: {e}")),
+            Err(_) => {}
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// View (buka satu berkas)
+// ---------------------------------------------------------------------------
+
+fn view_selected(ui: &Rc<Ui>) {
+    match selected_entry(ui) {
+        Some(obj) => view_entry(ui, &obj),
+        None => show_toast(ui, "Pilih berkas dulu"),
+    }
+}
+
+fn view_entry(ui: &Rc<Ui>, obj: &file_list::EntryObject) {
+    if obj.is_parent() || obj.is_dir() {
+        show_toast(ui, "Pilih berkas, bukan folder");
+        return;
+    }
+    match ui.current.borrow().clone() {
+        Some(archive) => run_view(ui, archive, obj.full_path(), None),
+        None => {}
+    }
+}
+
+fn run_view(ui: &Rc<Ui>, archive: PathBuf, name: String, password: Option<String>) {
+    let dest = std::env::temp_dir().join("zippy-view");
+    let cancel = CancelToken::new();
+    let (tx, rx) = async_channel::bounded(1);
+    let worker_archive = archive.clone();
+    let worker_name = name.clone();
+    let worker_pw = password.clone();
+    let worker_dest = dest.clone();
+    std::thread::spawn(move || {
+        let res = zippy_core::archive::extract_entry(
+            &worker_archive,
+            &worker_name,
+            &worker_dest,
+            worker_pw.as_deref(),
+            &cancel,
+        );
+        let _ = tx.send_blocking(res);
+    });
+
+    ui.progress_label.set_text(&format!("Membuka {name}…"));
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        match rx.recv().await {
+            Ok(Ok(path)) => launch_file(&ui, &path),
+            Ok(Err(Error::Password)) => {
+                let archive = archive.clone();
+                let name = name.clone();
+                ask_password(
+                    &ui,
+                    "Archive Terenkripsi",
+                    "Masukkan password untuk membuka berkas.",
+                    "Buka",
+                    move |ui, pw| match pw {
+                        Some(pw) => run_view(ui, archive.clone(), name.clone(), Some(pw)),
+                        None => show_toast(ui, "Password kosong"),
+                    },
+                );
+            }
+            Ok(Err(e)) => show_toast(&ui, &format!("Gagal membuka: {e}")),
+            Err(_) => {}
+        }
+    });
+}
+
+fn launch_file(ui: &Rc<Ui>, path: &Path) {
+    let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
+    launcher.launch(Some(&ui.window), gio::Cancellable::NONE, |res| {
+        if let Err(e) = res {
+            tracing::warn!("launch berkas gagal: {e}");
+        }
+    });
+}
+
+/// Entry yang sedang dipilih di daftar (yang pertama bila multi-select).
+fn selected_entry(ui: &Rc<Ui>) -> Option<file_list::EntryObject> {
+    let model = ui.list.column_view.model()?;
+    for i in 0..model.n_items() {
+        if model.is_selected(i) {
+            return model.item(i).and_downcast::<file_list::EntryObject>();
+        }
+    }
+    None
+}
+
+/// Toggle search bar (Find). Saat ditutup, bersihkan filter.
+fn toggle_search(ui: &Rc<Ui>) {
+    let on = !ui.search_bar.is_search_mode();
+    ui.search_bar.set_search_mode(on);
+    if !on {
+        ui.filter.borrow_mut().clear();
+        render(ui);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Drag-and-drop & context menu
 // ---------------------------------------------------------------------------
 
@@ -893,53 +1110,306 @@ fn handle_drop(ui: &Rc<Ui>, paths: Vec<PathBuf>) {
     }
 }
 
-/// Menu klik-kanan pada daftar isi (aksi tingkat-archive). Cikal-bakal context
-/// menu kaya yang jadi pembeda Zippy (Planning Doc §4).
+/// Menu klik-kanan **kondisional** pada daftar isi — pembeda Zippy (Planning
+/// Doc §4). Isi menu berubah sesuai seleksi: berkas, folder, "..", banyak item,
+/// atau area kosong.
 fn setup_context_menu(ui: &Rc<Ui>) {
-    let popover = gtk::Popover::builder().has_arrow(false).build();
+    let popover = gtk::PopoverMenu::from_model(gio::MenuModel::NONE);
     popover.set_parent(&ui.list.widget);
-
-    let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let extract = menu_button("Extract Semua…");
-    let close = menu_button("Tutup Archive");
-    menu.append(&extract);
-    menu.append(&close);
-    popover.set_child(Some(&menu));
-
-    extract.connect_clicked({
-        let ui = ui.clone();
-        let popover = popover.clone();
-        move |_| {
-            popover.popdown();
-            extract_dialog(&ui);
-        }
-    });
-    close.connect_clicked({
-        let ui = ui.clone();
-        let popover = popover.clone();
-        move |_| {
-            popover.popdown();
-            close_archive(&ui);
-        }
-    });
+    popover.set_has_arrow(false);
+    popover.set_halign(gtk::Align::Start);
 
     let gesture = gtk::GestureClick::builder()
         .button(gdk::BUTTON_SECONDARY)
         .build();
-    gesture.connect_pressed(move |_, _, x, y| {
-        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        popover.popup();
+    gesture.connect_pressed({
+        let ui = ui.clone();
+        move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let menu = build_context_menu(&ui);
+            popover.set_menu_model(Some(&menu));
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            popover.popup();
+        }
     });
     ui.list.widget.add_controller(gesture);
 }
 
-fn menu_button(label: &str) -> gtk::Button {
-    let b = gtk::Button::builder().label(label).build();
-    b.add_css_class("flat");
-    if let Some(child) = b.child().and_downcast::<gtk::Label>() {
-        child.set_xalign(0.0);
+/// Susun model menu sesuai seleksi saat ini.
+fn build_context_menu(ui: &Rc<Ui>) -> gio::Menu {
+    let sel = selected_entries(ui);
+    let menu = gio::Menu::new();
+
+    match sel.as_slice() {
+        // Satu baris terpilih.
+        [o] if o.is_parent() => {
+            menu.append(Some("Naik ke folder induk"), Some("win.up"));
+        }
+        [o] if o.is_dir() => {
+            let s = gio::Menu::new();
+            s.append(Some("Buka folder"), Some("win.open_folder"));
+            s.append(Some("Extract folder ini…"), Some("win.extract_sel"));
+            menu.append_section(None, &s);
+            let s2 = gio::Menu::new();
+            s2.append(Some("Salin nama"), Some("win.copy_name"));
+            s2.append(Some("Properti…"), Some("win.props"));
+            menu.append_section(None, &s2);
+        }
+        [_o] => {
+            let s = gio::Menu::new();
+            s.append(Some("Buka (View)"), Some("win.view"));
+            s.append(Some("Extract berkas ini…"), Some("win.extract_sel"));
+            menu.append_section(None, &s);
+            let s2 = gio::Menu::new();
+            s2.append(Some("Salin nama"), Some("win.copy_name"));
+            s2.append(Some("Properti…"), Some("win.props"));
+            menu.append_section(None, &s2);
+        }
+        // Banyak baris terpilih.
+        many if many.len() > 1 => {
+            let s = gio::Menu::new();
+            s.append(
+                Some(&format!("Extract {} item terpilih…", many.len())),
+                Some("win.extract_sel"),
+            );
+            s.append(Some("Salin nama"), Some("win.copy_name"));
+            menu.append_section(None, &s);
+        }
+        _ => {}
     }
-    b
+
+    // Aksi tingkat-archive (selalu ada bila archive terbuka).
+    if ui.current.borrow().is_some() {
+        let s = gio::Menu::new();
+        s.append(Some("Extract Semua…"), Some("win.extract"));
+        s.append(Some("Test Archive"), Some("win.test"));
+        menu.append_section(None, &s);
+        let s2 = gio::Menu::new();
+        s2.append(Some("Tutup Archive"), Some("win.close"));
+        menu.append_section(None, &s2);
+    }
+    menu
+}
+
+/// Semua entry yang sedang terpilih di daftar.
+fn selected_entries(ui: &Rc<Ui>) -> Vec<file_list::EntryObject> {
+    let mut out = Vec::new();
+    if let Some(model) = ui.list.column_view.model() {
+        for i in 0..model.n_items() {
+            if model.is_selected(i) {
+                if let Some(o) = model.item(i).and_downcast::<file_list::EntryObject>() {
+                    out.push(o);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Masuk ke folder yang terpilih (bila tepat satu folder).
+fn open_selected_folder(ui: &Rc<Ui>) {
+    if let [o] = selected_entries(ui).as_slice() {
+        if o.is_dir() && !o.is_parent() {
+            ui.cwd.borrow_mut().push(o.name());
+            render(ui);
+        }
+    }
+}
+
+/// Salin nama entry terpilih ke clipboard (dipisah baris).
+fn copy_selected_names(ui: &Rc<Ui>) {
+    let names: Vec<String> = selected_entries(ui)
+        .iter()
+        .filter(|o| !o.is_parent())
+        .map(|o| o.name())
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    ui.window.clipboard().set_text(&names.join("\n"));
+    show_toast(ui, &format!("{} nama disalin", names.len()));
+}
+
+/// Dialog properti untuk satu entry terpilih.
+fn show_properties(ui: &Rc<Ui>) {
+    let sel = selected_entries(ui);
+    let [o] = sel.as_slice() else {
+        return;
+    };
+    if o.is_parent() {
+        return;
+    }
+    let ratio = if o.size() > 0 {
+        format!("{:.1}%", o.packed() as f64 / o.size() as f64 * 100.0)
+    } else {
+        "—".to_string()
+    };
+    let body = format!(
+        "Nama: {}\nPath: {}\nTipe: {}\nUkuran: {} bita\nPacked: {} bita\nRasio: {}\nModified: {}\nCRC32: {}",
+        o.name(),
+        o.full_path(),
+        if o.is_dir() { "Folder" } else { "Berkas" },
+        file_list::group_thousands(o.size()),
+        file_list::group_thousands(o.packed()),
+        ratio,
+        opt_dash(o.modified()),
+        opt_dash(o.crc_hex()),
+    );
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some("Properti"), Some(&body));
+    dialog.add_response("ok", "Tutup");
+    dialog.present();
+}
+
+fn opt_dash(s: String) -> String {
+    if s.is_empty() {
+        "—".to_string()
+    } else {
+        s
+    }
+}
+
+/// Extract entry-entry terpilih (berkas, atau seluruh isi folder terpilih) ke
+/// folder pilihan user — mempertahankan struktur path.
+fn extract_selected(ui: &Rc<Ui>) {
+    let archive = match ui.current.borrow().clone() {
+        Some(p) => p,
+        None => return,
+    };
+    let sel = selected_entries(ui);
+    if sel.is_empty() {
+        return;
+    }
+
+    // Perluas seleksi → daftar nama berkas (folder dijabarkan ke isinya).
+    let entries = ui.entries.borrow();
+    let mut names: Vec<String> = Vec::new();
+    for o in &sel {
+        if o.is_parent() {
+            continue;
+        }
+        if o.is_dir() {
+            let prefix = format!("{}/", o.full_path());
+            for e in entries.iter() {
+                if !e.is_dir && e.name.trim_end_matches('/').starts_with(&prefix) {
+                    names.push(e.name.clone());
+                }
+            }
+        } else {
+            names.push(o.full_path());
+        }
+    }
+    drop(entries);
+    names.sort();
+    names.dedup();
+    if names.is_empty() {
+        show_toast(ui, "Tidak ada berkas untuk di-extract");
+        return;
+    }
+
+    let dialog = gtk::FileDialog::builder().title("Extract ke folder…").build();
+    let win = ui.window.clone();
+    let ui = ui.clone();
+    dialog.select_folder(Some(&win), gio::Cancellable::NONE, move |res| {
+        if let Ok(folder) = res {
+            if let Some(dest) = folder.path() {
+                run_extract_selected(&ui, archive.clone(), names.clone(), dest, None);
+            }
+        }
+    });
+}
+
+fn run_extract_selected(
+    ui: &Rc<Ui>,
+    archive: PathBuf,
+    names: Vec<String>,
+    dest: PathBuf,
+    password: Option<String>,
+) {
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+
+    let (tx_ev, rx_ev) = async_channel::unbounded();
+    let (tx_done, rx_done) = async_channel::bounded(1);
+    let worker_archive = archive.clone();
+    let worker_names = names.clone();
+    let worker_dest = dest.clone();
+    let worker_pw = password.clone();
+    std::thread::spawn(move || {
+        let sink = ChannelSink::new(tx_ev);
+        let total = worker_names.len();
+        sink.emit(ProgressEvent::Started { total_files: total });
+        let mut res = Ok(());
+        for (i, name) in worker_names.iter().enumerate() {
+            if let Err(e) = cancel.check() {
+                res = Err(e);
+                break;
+            }
+            if let Err(e) = zippy_core::archive::extract_entry(
+                &worker_archive,
+                name,
+                &worker_dest,
+                worker_pw.as_deref(),
+                &cancel,
+            ) {
+                res = Err(e);
+                break;
+            }
+            sink.emit(ProgressEvent::FileProcessed {
+                name: name.clone(),
+                index: i,
+            });
+        }
+        drop(sink);
+        let _ = tx_done.send_blocking(res);
+    });
+
+    ui.revealer.set_reveal_child(true);
+    ui.cancel_btn.set_sensitive(true);
+    ui.bar.set_fraction(0.0);
+    ui.progress_label.set_text("Memulai…");
+    schedule_dev_cancel(ui);
+
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let mut total = 0usize;
+        while let Ok(ev) = rx_ev.recv().await {
+            match ev {
+                ProgressEvent::Started { total_files } => total = total_files,
+                ProgressEvent::FileProcessed { name, index } => {
+                    if total > 0 {
+                        ui.bar.set_fraction((index + 1) as f64 / total as f64);
+                    }
+                    ui.progress_label.set_text(&name);
+                }
+                _ => {}
+            }
+        }
+        ui.revealer.set_reveal_child(false);
+        *ui.cancel.borrow_mut() = None;
+        match rx_done.recv().await {
+            Ok(Ok(())) => show_toast(&ui, "Extract selesai"),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Extract dibatalkan"),
+            Ok(Err(Error::Password)) => {
+                let archive = archive.clone();
+                let names = names.clone();
+                let dest = dest.clone();
+                ask_password(
+                    &ui,
+                    "Archive Terenkripsi",
+                    "Masukkan password untuk extract.",
+                    "Extract",
+                    move |ui, pw| match pw {
+                        Some(pw) => {
+                            run_extract_selected(ui, archive.clone(), names.clone(), dest.clone(), Some(pw))
+                        }
+                        None => show_toast(ui, "Password kosong"),
+                    },
+                );
+            }
+            Ok(Err(e)) => show_toast(&ui, &format!("Gagal extract: {e}")),
+            Err(_) => {}
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

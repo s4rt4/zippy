@@ -114,6 +114,43 @@ pub fn sevenzip_compress(
     Ok(())
 }
 
+/// Uji integritas archive 7z via `7z t`.
+pub fn sevenzip_test(
+    archive: &Path,
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    progress.emit(ProgressEvent::Started { total_files: 0 });
+    let mut cmd = hardened_command("7z");
+    cmd.arg("t").arg("-y").arg("--").arg(archive);
+    run_capture(&mut cmd, password, Some(cancel))?;
+    progress.emit(ProgressEvent::Finished {
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    });
+    Ok(())
+}
+
+/// Extract satu entry `name` dari archive 7z ke bawah `dest_dir`.
+pub fn sevenzip_extract_entry(
+    archive: &Path,
+    name: &str,
+    dest_dir: &Path,
+    password: Option<&str>,
+    cancel: &CancelToken,
+) -> Result<()> {
+    let mut cmd = hardened_command("7z");
+    cmd.arg("x")
+        .arg("-y")
+        .arg(format!("-o{}", dest_dir.display()))
+        .arg("--")
+        .arg(archive)
+        .arg(name);
+    run_capture(&mut cmd, password, Some(cancel))?;
+    Ok(())
+}
+
 /// Parse output `7z l -slt` menjadi daftar [`Entry`].
 #[derive(Default)]
 struct SltAcc {
@@ -218,6 +255,45 @@ pub fn unrar_extract(
     progress.emit(ProgressEvent::Finished {
         elapsed_ms: start.elapsed().as_millis() as u64,
     });
+    Ok(())
+}
+
+/// Uji integritas archive RAR via `unrar t`.
+pub fn unrar_test(
+    archive: &Path,
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    progress.emit(ProgressEvent::Started { total_files: 0 });
+    let mut cmd = hardened_command("unrar");
+    cmd.arg("t").arg("--").arg(archive);
+    run_capture(&mut cmd, password, Some(cancel))?;
+    progress.emit(ProgressEvent::Finished {
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    });
+    Ok(())
+}
+
+/// Extract satu entry `name` dari archive RAR ke bawah `dest_dir`.
+pub fn unrar_extract_entry(
+    archive: &Path,
+    name: &str,
+    dest_dir: &Path,
+    password: Option<&str>,
+    cancel: &CancelToken,
+) -> Result<()> {
+    let mut dest_arg = dest_dir.as_os_str().to_os_string();
+    dest_arg.push("/");
+    let mut cmd = hardened_command("unrar");
+    cmd.arg("x")
+        .arg("-y")
+        .arg("--")
+        .arg(archive)
+        .arg(name)
+        .arg(dest_arg);
+    run_capture(&mut cmd, password, Some(cancel))?;
     Ok(())
 }
 
