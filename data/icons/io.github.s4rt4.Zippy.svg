@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="box" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1a5fb4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- badan arsip -->
+  <rect x="20" y="16" width="88" height="96" rx="12" fill="url(#box)"/>
+  <rect x="20" y="16" width="88" height="96" rx="12" fill="none" stroke="#103a73" stroke-width="2"/>
+
+  <!-- jalur resleting -->
+  <rect x="59" y="16" width="10" height="96" fill="#16315e"/>
+
+  <!-- gigi resleting -->
+  <g fill="#f6d32d">
+    <rect x="50" y="22" width="9" height="5" rx="1"/>
+    <rect x="69" y="22" width="9" height="5" rx="1"/>
+    <rect x="50" y="32" width="9" height="5" rx="1"/>
+    <rect x="69" y="32" width="9" height="5" rx="1"/>
+    <rect x="50" y="42" width="9" height="5" rx="1"/>
+    <rect x="69" y="42" width="9" height="5" rx="1"/>
+    <rect x="50" y="52" width="9" height="5" rx="1"/>
+    <rect x="69" y="52" width="9" height="5" rx="1"/>
+  </g>
+
+  <!-- kepala + tarikan resleting -->
+  <rect x="52" y="62" width="24" height="20" rx="4" fill="#f9f06b" stroke="#9c6e00" stroke-width="1.5"/>
+  <rect x="60" y="80" width="8" height="22" rx="4" fill="#f6d32d" stroke="#9c6e00" stroke-width="1.5"/>
+  <circle cx="64" cy="92" r="4" fill="#16315e"/>
+</svg>

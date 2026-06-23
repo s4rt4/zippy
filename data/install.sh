@@ -20,6 +20,11 @@ echo "==> Build release"
 echo "==> Pasang biner → $PREFIX/bin/zippy"
 install -Dm755 "$REPO/target/release/zippy" "$PREFIX/bin/zippy"
 
+echo "==> Pasang ikon aplikasi"
+install -Dm644 "$REPO/data/icons/io.github.s4rt4.Zippy.svg" \
+    "$PREFIX/share/icons/hicolor/scalable/apps/io.github.s4rt4.Zippy.svg"
+gtk-update-icon-cache -q -t "$PREFIX/share/icons/hicolor" 2>/dev/null || true
+
 echo "==> Pasang .desktop + MIME"
 install -Dm644 "$REPO/data/io.github.s4rt4.Zippy.desktop" \
     "$PREFIX/share/applications/io.github.s4rt4.Zippy.desktop"

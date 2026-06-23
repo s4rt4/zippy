@@ -102,7 +102,14 @@ pub fn sevenzip_compress(
     });
 
     let mut cmd = hardened_command("7z");
-    cmd.arg("a").arg("-y").arg("--").arg(dest);
+    cmd.arg("a").arg("-y");
+    // 7z hanya mengenkripsi bila flag `-p` ADA (tanpa nilai) — passwordnya
+    // sendiri tetap dikirim via stdin (bukan argv, agar tidak bocor lewat
+    // /proc/<pid>/cmdline). Tanpa `-p`, password di stdin diabaikan diam-diam.
+    if password.is_some() {
+        cmd.arg("-p");
+    }
+    cmd.arg("--").arg(dest);
     for input in inputs {
         cmd.arg(input);
     }

@@ -1,0 +1,36 @@
+[package]
+name = "zippy-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+zippy-core = { path = ".." }
+
+[[bin]]
+name = "detect"
+path = "fuzz_targets/detect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "safe_join"
+path = "fuzz_targets/safe_join.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "list"
+path = "fuzz_targets/list.rs"
+test = false
+doc = false
+bench = false
+
+# Detach dari workspace induk (fuzz butuh nightly + libfuzzer).
+[workspace]

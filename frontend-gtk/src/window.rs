@@ -113,6 +113,7 @@ pub fn build_ui(app: &adw::Application) {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("Zippy")
+        .icon_name("io.github.s4rt4.Zippy")
         .default_width(820)
         .default_height(540)
         .build();
@@ -840,7 +841,7 @@ fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
     ask_password(
         ui,
         "Lindungi Archive",
-        "Masukkan password untuk enkripsi (kosongkan untuk tanpa password).",
+        "Masukkan password untuk enkripsi AES-256 (kosongkan untuk tanpa password).",
         "Buat",
         move |ui, pw| run_compress(ui, inputs.clone(), dest.clone(), pw),
     );
