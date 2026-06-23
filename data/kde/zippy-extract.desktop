@@ -1,0 +1,34 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=application/zip;application/x-7z-compressed;application/vnd.rar;application/x-rar;application/x-rar-compressed;application/x-tar;application/gzip;application/x-gzip;application/x-bzip2;application/x-xz;application/zstd;application/x-zstd;application/x-compressed-tar;application/x-bzip-compressed-tar;application/x-xz-compressed-tar;application/x-zstd-compressed-tar;
+Actions=ExtractHere;ExtractSubfolder;ExtractTo;Test;OpenZippy;
+X-KDE-Priority=TopLevel
+X-KDE-Submenu=Zippy
+Name=Zippy
+Icon=application-x-archive
+
+[Desktop Action ExtractHere]
+Name=Extract Here
+Icon=archive-extract
+Exec=zippy --extract-here %F
+
+[Desktop Action ExtractSubfolder]
+Name=Extract to Subfolder
+Icon=archive-extract
+Exec=zippy --extract-each %F
+
+[Desktop Action ExtractTo]
+Name=Extract To…
+Icon=archive-extract
+Exec=zippy --extract-to %F
+
+[Desktop Action Test]
+Name=Test Integrity
+Icon=dialog-ok-apply
+Exec=zippy --test %F
+
+[Desktop Action OpenZippy]
+Name=Open with Zippy
+Icon=application-x-archive
+Exec=zippy --open %F

@@ -1,0 +1,80 @@
+<action>
+	<icon>archive-extract</icon>
+	<name>Extract Here (Zippy)</name>
+	<unique-id>zippy-extract-here</unique-id>
+	<command>zippy --extract-here %F</command>
+	<description>Extract archive(s) here</description>
+	<patterns>*.zip;*.7z;*.rar;*.tar;*.gz;*.bz2;*.xz;*.zst;*.tgz;*.tbz2;*.txz;*.tar.gz;*.tar.bz2;*.tar.xz;*.tar.zst</patterns>
+	<audio-files/>
+	<image-files/>
+	<other-files/>
+	<text-files/>
+	<video-files/>
+</action>
+<action>
+	<icon>archive-extract</icon>
+	<name>Extract to Subfolder (Zippy)</name>
+	<unique-id>zippy-extract-each</unique-id>
+	<command>zippy --extract-each %F</command>
+	<description>Extract each archive to a folder named after it</description>
+	<patterns>*.zip;*.7z;*.rar;*.tar;*.gz;*.bz2;*.xz;*.zst;*.tgz;*.tbz2;*.txz;*.tar.gz;*.tar.bz2;*.tar.xz;*.tar.zst</patterns>
+	<audio-files/>
+	<image-files/>
+	<other-files/>
+	<text-files/>
+	<video-files/>
+</action>
+<action>
+	<icon>dialog-ok-apply</icon>
+	<name>Test Integrity (Zippy)</name>
+	<unique-id>zippy-test</unique-id>
+	<command>zippy --test %F</command>
+	<description>Test archive integrity</description>
+	<patterns>*.zip;*.7z;*.rar;*.tar;*.gz;*.bz2;*.xz;*.zst;*.tgz;*.tbz2;*.txz;*.tar.gz;*.tar.bz2;*.tar.xz;*.tar.zst</patterns>
+	<audio-files/>
+	<image-files/>
+	<other-files/>
+	<text-files/>
+	<video-files/>
+</action>
+<action>
+	<icon>application-x-archive</icon>
+	<name>Open with Zippy</name>
+	<unique-id>zippy-open</unique-id>
+	<command>zippy --open %f</command>
+	<description>Open archive in Zippy</description>
+	<patterns>*.zip;*.7z;*.rar;*.tar;*.gz;*.bz2;*.xz;*.zst;*.tgz;*.tbz2;*.txz;*.tar.gz;*.tar.bz2;*.tar.xz;*.tar.zst</patterns>
+	<audio-files/>
+	<image-files/>
+	<other-files/>
+	<text-files/>
+	<video-files/>
+</action>
+<action>
+	<icon>add-files-to-archive</icon>
+	<name>Add to Archive… (Zippy)</name>
+	<unique-id>zippy-add</unique-id>
+	<command>zippy --add %F</command>
+	<description>Create an archive from the selection</description>
+	<patterns>*</patterns>
+	<directories/>
+	<audio-files/>
+	<image-files/>
+	<other-files/>
+	<text-files/>
+	<video-files/>
+</action>
+<action>
+	<icon>add-files-to-archive</icon>
+	<name>Compress to .zip (Zippy)</name>
+	<unique-id>zippy-add-quick</unique-id>
+	<command>zippy --add-quick %F</command>
+	<description>Quick-compress the selection to a .zip</description>
+	<patterns>*</patterns>
+	<directories/>
+	<audio-files/>
+	<image-files/>
+	<other-files/>
+	<text-files/>
+	<video-files/>
+</action>

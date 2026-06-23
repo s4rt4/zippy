@@ -6,8 +6,10 @@ Zippy"), dan menu klik-kanan di Nautilus (GNOME Files).
 | Berkas | Fungsi |
 |--------|--------|
 | `io.github.s4rt4.Zippy.desktop` | Launcher + asosiasi MIME (double-click / "Open With") |
-| `zippy-nautilus.py` | Ekstensi `nautilus-python`: submenu klik-kanan **Zippy** |
-| `install.sh` | Build release + pasang semua ke `~/.local` (atau `PREFIX`) |
+| `zippy-nautilus.py` | GNOME Files: ekstensi `nautilus-python`, submenu **Zippy** |
+| `kde/zippy-*.desktop` | KDE Dolphin: ServiceMenu (extract + compress) |
+| `thunar/zippy-uca.xml` | XFCE Thunar: Custom Actions |
+| `install.sh` | Build release + pasang sesuai DE yang terpasang |
 
 ## Pasang
 
@@ -15,12 +17,14 @@ Zippy"), dan menu klik-kanan di Nautilus (GNOME Files).
 ./data/install.sh
 ```
 
-Lalu, agar menu klik-kanan muncul, pasang `nautilus-python` dan reload:
+`install.sh` mendeteksi DE yang ada dan memasang integrasi yang sesuai. Lalu
+aktifkan per file manager:
 
-```sh
-sudo dnf install nautilus-python   # Fedora
-nautilus -q
-```
+| DE | Aktivasi |
+|----|----------|
+| **GNOME Files** | `sudo dnf install nautilus-python` lalu `nautilus -q` |
+| **KDE Dolphin** | Restart Dolphin (ServiceMenu, tanpa dependensi) |
+| **XFCE Thunar** | Tutup & buka lagi Thunar (aksi di-merge ke `~/.config/Thunar/uca.xml`, aksi user lain dipertahankan) |
 
 ## Menu klik-kanan (Nautilus)
 

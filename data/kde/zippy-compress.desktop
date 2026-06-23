@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+# Berlaku untuk semua berkas & folder (konteks A/D — buat archive).
+MimeType=all/allfiles;inode/directory;
+Actions=AddDialog;AddQuick;
+X-KDE-Priority=TopLevel
+X-KDE-Submenu=Zippy
+Name=Zippy
+Icon=add-files-to-archive
+
+[Desktop Action AddDialog]
+Name=Add to Archive…
+Icon=add-files-to-archive
+Exec=zippy --add %F
+
+[Desktop Action AddQuick]
+Name=Compress to .zip
+Icon=add-files-to-archive
+Exec=zippy --add-quick %F

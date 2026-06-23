@@ -42,7 +42,10 @@ pub fn dispatch(args: &[String]) -> Dispatch {
         "--extract-to" => Dispatch::Gui(rest.first().map(PathBuf::from)),
 
         "--extract-here" => Dispatch::Handled(verb_extract(rest, ExtractMode::Here)),
-        "--extract-to-subfolder" => Dispatch::Handled(verb_extract(rest, ExtractMode::Subfolder)),
+        // --extract-each: alias yang dipakai ServiceMenu KDE (Planning Doc §6.6).
+        "--extract-to-subfolder" | "--extract-each" => {
+            Dispatch::Handled(verb_extract(rest, ExtractMode::Subfolder))
+        }
         "--test" => Dispatch::Handled(verb_test(rest)),
         // "Add to archive…" → dialog GUI. "Add to <nama>.zip" → quick headless.
         "--add" => Dispatch::GuiCompress(rest.iter().map(PathBuf::from).collect()),
