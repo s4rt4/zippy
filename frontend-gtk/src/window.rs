@@ -16,7 +16,7 @@ use gtk4 as gtk;
 use gtk4::gio;
 use gtk4::glib;
 use libadwaita as adw;
-use zippy_core::{ProgressEvent, ProgressSink};
+use zippy_core::{Error, ProgressEvent, ProgressSink};
 
 use crate::file_list::{self, FileListView};
 use crate::progress::ChannelSink;
@@ -188,7 +188,8 @@ fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
                 // Dev-hook: ZIPPY_EXTRACT_TO=<dir> langsung meng-extract setelah
                 // open — untuk uji jalur progress tanpa dialog.
                 if let Some(dir) = std::env::var_os("ZIPPY_EXTRACT_TO") {
-                    run_extract(&ui, path.clone(), PathBuf::from(dir));
+                    let pw = std::env::var("ZIPPY_PASSWORD").ok();
+                    run_extract(&ui, path.clone(), PathBuf::from(dir), pw);
                 }
             }
             Ok(Err(e)) => {
@@ -221,22 +222,31 @@ fn extract_dialog(ui: &Rc<Ui>) {
     dialog.select_folder(Some(&win), gio::Cancellable::NONE, move |res| {
         if let Ok(folder) = res {
             if let Some(dest) = folder.path() {
-                run_extract(&ui, archive.clone(), dest);
+                run_extract(&ui, archive.clone(), dest, None);
             }
         }
     });
 }
 
-fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf) {
-    let (tx, rx) = async_channel::unbounded();
+/// Extract `archive` → `dest`. `password` dipakai bila archive terenkripsi;
+/// bila `None` dan core melaporkan [`Error::Password`], UI memunculkan dialog
+/// password lalu memanggil ulang dengan password yang dimasukkan.
+fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, password: Option<String>) {
+    // `tx_ev`: stream progress (untuk progress bar). `tx_done`: hasil akhir
+    // (untuk membedakan sukses / butuh-password / error lain). Worker menutup
+    // `tx_ev` saat selesai (sink di-drop), lalu mengirim hasil ke `tx_done`.
+    let (tx_ev, rx_ev) = async_channel::unbounded();
+    let (tx_done, rx_done) = async_channel::bounded(1);
+    let worker_archive = archive.clone();
+    let worker_dest = dest.clone();
+    let worker_pw = password.clone();
     std::thread::spawn(move || {
-        let sink = ChannelSink::new(tx);
-        if let Err(e) = zippy_core::archive::extract_all(&archive, &dest, None, &sink) {
-            sink.emit(ProgressEvent::Error {
-                message: e.to_string(),
-            });
-        }
-        // sink drop → channel tertutup → loop UI berakhir.
+        let res = {
+            let sink = ChannelSink::new(tx_ev);
+            zippy_core::archive::extract_all(&worker_archive, &worker_dest, worker_pw.as_deref(), &sink)
+            // sink drop di sini → rx_ev tertutup → loop progress UI berakhir.
+        };
+        let _ = tx_done.send_blocking(res);
     });
 
     ui.revealer.set_reveal_child(true);
@@ -246,7 +256,7 @@ fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf) {
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         let mut total = 0usize;
-        while let Ok(ev) = rx.recv().await {
+        while let Ok(ev) = rx_ev.recv().await {
             match ev {
                 ProgressEvent::Started { total_files } => {
                     total = total_files;
@@ -265,19 +275,69 @@ fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf) {
                         ui.bar.set_fraction(bytes as f64 / t as f64);
                     }
                 }
-                ProgressEvent::Finished { elapsed_ms } => {
-                    ui.revealer.set_reveal_child(false);
-                    show_toast(&ui, &format!("Extract selesai ({elapsed_ms} ms)"));
-                    tracing::info!(elapsed_ms, "extract selesai");
-                }
-                ProgressEvent::Error { message } => {
-                    ui.revealer.set_reveal_child(false);
-                    show_toast(&ui, &format!("Gagal extract: {message}"));
-                    tracing::error!(%message, "extract gagal");
-                }
+                ProgressEvent::Finished { .. } | ProgressEvent::Error { .. } => {}
             }
         }
+
+        ui.revealer.set_reveal_child(false);
+        match rx_done.recv().await {
+            Ok(Ok(())) => {
+                show_toast(&ui, "Extract selesai");
+                tracing::info!("extract selesai");
+            }
+            Ok(Err(Error::Password)) => {
+                // Salah/perlu password → minta lalu coba lagi.
+                tracing::warn!("extract perlu password");
+                prompt_password(&ui, &archive, &dest);
+            }
+            Ok(Err(e)) => {
+                show_toast(&ui, &format!("Gagal extract: {e}"));
+                tracing::error!(error = %e, "extract gagal");
+            }
+            Err(_) => {} // worker hilang
+        }
     });
+}
+
+/// Dialog password (AdwMessageDialog + GtkPasswordEntry); pada konfirmasi,
+/// memanggil ulang [`run_extract`] dengan password yang dimasukkan.
+fn prompt_password(ui: &Rc<Ui>, archive: &PathBuf, dest: &PathBuf) {
+    let entry = gtk::PasswordEntry::builder()
+        .show_peek_icon(true)
+        .activates_default(true)
+        .build();
+
+    let name = archive
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dialog = adw::MessageDialog::new(
+        Some(&ui.window),
+        Some("Archive Terenkripsi"),
+        Some(&format!("Masukkan password untuk \"{name}\".")),
+    );
+    dialog.set_extra_child(Some(&entry));
+    dialog.add_response("cancel", "Batal");
+    dialog.add_response("ok", "Buka");
+    dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("ok"));
+    dialog.set_close_response("cancel");
+
+    let ui = ui.clone();
+    let archive = archive.clone();
+    let dest = dest.clone();
+    dialog.connect_response(None, move |_, resp| {
+        if resp != "ok" {
+            return;
+        }
+        let pw = entry.text().to_string();
+        if pw.is_empty() {
+            show_toast(&ui, "Password kosong");
+            return;
+        }
+        run_extract(&ui, archive.clone(), dest.clone(), Some(pw));
+    });
+    dialog.present();
 }
 
 // ---------------------------------------------------------------------------
