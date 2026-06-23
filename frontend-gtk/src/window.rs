@@ -234,17 +234,28 @@ pub fn build_ui(app: &adw::Application) {
     } else if let Some(p) = std::env::var_os("ZIPPY_OPEN") {
         load_archive(&ui, PathBuf::from(p));
     }
+    // "Add to archive…" dari file manager → langsung dialog buat-archive.
+    if let Some(inputs) = INITIAL_COMPRESS.with(|c| c.borrow_mut().take()) {
+        choose_output(&ui, inputs);
+    }
     maybe_bench(app);
 }
 
 thread_local! {
     /// Archive yang diminta dibuka dari argumen CLI (di-set sebelum `app.run`).
     static INITIAL_ARCHIVE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    /// Berkas yang akan dikompres (verb `--add`), di-set sebelum `app.run`.
+    static INITIAL_COMPRESS: RefCell<Option<Vec<PathBuf>>> = const { RefCell::new(None) };
 }
 
 /// Set archive yang akan dibuka otomatis saat GUI start (dipanggil dari `main`).
 pub fn set_initial_archive(path: PathBuf) {
     INITIAL_ARCHIVE.with(|c| *c.borrow_mut() = Some(path));
+}
+
+/// Set berkas yang akan dikompres lewat dialog saat GUI start.
+pub fn set_initial_compress(inputs: Vec<PathBuf>) {
+    INITIAL_COMPRESS.with(|c| *c.borrow_mut() = Some(inputs));
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,8 @@ pub enum Dispatch {
     Handled(ExitCode),
     /// Lanjut ke GUI, opsional membuka satu archive.
     Gui(Option<PathBuf>),
+    /// Lanjut ke GUI dengan dialog buat-archive untuk berkas-berkas ini.
+    GuiCompress(Vec<PathBuf>),
 }
 
 /// Putuskan apa yang harus dilakukan dari argumen (tanpa GUI untuk verb batch).
@@ -42,7 +44,9 @@ pub fn dispatch(args: &[String]) -> Dispatch {
         "--extract-here" => Dispatch::Handled(verb_extract(rest, ExtractMode::Here)),
         "--extract-to-subfolder" => Dispatch::Handled(verb_extract(rest, ExtractMode::Subfolder)),
         "--test" => Dispatch::Handled(verb_test(rest)),
-        "--add" | "--add-quick" => Dispatch::Handled(verb_add(rest)),
+        // "Add to archive…" → dialog GUI. "Add to <nama>.zip" → quick headless.
+        "--add" => Dispatch::GuiCompress(rest.iter().map(PathBuf::from).collect()),
+        "--add-quick" => Dispatch::Handled(verb_add_quick(rest)),
 
         // Verb tak dikenal.
         v if v.starts_with('-') => {
@@ -126,7 +130,7 @@ fn verb_test(archives: &[String]) -> ExitCode {
 // Verb add (kompres cepat)
 // ---------------------------------------------------------------------------
 
-fn verb_add(inputs: &[String]) -> ExitCode {
+fn verb_add_quick(inputs: &[String]) -> ExitCode {
     if inputs.is_empty() {
         eprintln!("zippy: tidak ada berkas untuk dikompres");
         return ExitCode::FAILURE;
@@ -134,8 +138,8 @@ fn verb_add(inputs: &[String]) -> ExitCode {
     let paths: Vec<PathBuf> = inputs.iter().map(PathBuf::from).collect();
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
 
-    // Nama archive: bila satu input → "<nama>.zip"; bila banyak → "archive.zip"
-    // di direktori induk input pertama.
+    // Nama archive (auto): satu input → "<nama>.zip"; banyak input →
+    // "<folder-induk>.zip" (Planning Doc §6.2 konteks A/C).
     let parent = paths[0].parent().unwrap_or_else(|| Path::new("."));
     let dest = if paths.len() == 1 {
         let stem = paths[0]
@@ -144,7 +148,12 @@ fn verb_add(inputs: &[String]) -> ExitCode {
             .unwrap_or_else(|| "archive".to_string());
         parent.join(format!("{stem}.zip"))
     } else {
-        parent.join("archive.zip")
+        let folder = parent
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "archive".to_string());
+        parent.join(format!("{folder}.zip"))
     };
 
     eprintln!("Kompres {} berkas → {}", paths.len(), dest.display());
@@ -217,5 +226,6 @@ fn print_help() {
     println!("  --extract-to-subfolder <arc…>  Extract ke sub-folder senama");
     println!("  --extract-to <arc>          Extract via dialog GUI");
     println!("  --test <arc…>               Uji integritas");
-    println!("  --add <files…>              Kompres jadi .zip");
+    println!("  --add <files…>              Buat archive via dialog GUI");
+    println!("  --add-quick <files…>        Kompres cepat jadi .zip (auto-nama)");
 }

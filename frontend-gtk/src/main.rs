@@ -29,6 +29,11 @@ fn main() -> std::process::ExitCode {
                 window::set_initial_archive(path);
             }
         }
+        cli::Dispatch::GuiCompress(inputs) => {
+            if !inputs.is_empty() {
+                window::set_initial_compress(inputs);
+            }
+        }
     }
 
     let app = adw::Application::builder().application_id(APP_ID).build();
