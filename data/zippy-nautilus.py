@@ -82,10 +82,17 @@ def _strip_archive_ext(name):
     return stem if dot and stem else name
 
 
+def _strip_ext(name):
+    """Buang satu ekstensi terakhir; dotfile/.tanpa-titik dibiarkan."""
+    stem, dot, _ = name.rpartition(".")
+    return stem if dot and stem else name
+
+
 def _quick_zip_name(files):
-    """Nama .zip auto: satu input → '<nama>.zip'; banyak → '<folder-induk>.zip'."""
+    """Nama .zip auto (gaya WinRAR): satu input → ekstensi dibuang dulu
+    ('photo.png' → 'photo.zip'); banyak input → '<folder-induk>.zip'."""
     if len(files) == 1:
-        return os.path.basename(_path(files[0])) + ".zip"
+        return _strip_ext(os.path.basename(_path(files[0]))) + ".zip"
     parent = os.path.dirname(_path(files[0]))
     folder = os.path.basename(parent) or "archive"
     return folder + ".zip"

@@ -142,11 +142,13 @@ fn verb_add_quick(inputs: &[String]) -> ExitCode {
     // "<folder-induk>.zip" (Planning Doc §6.2 konteks A/C).
     let parent = paths[0].parent().unwrap_or_else(|| Path::new("."));
     let dest = if paths.len() == 1 {
-        let stem = paths[0]
+        // Buang ekstensi terakhir (mis. "photo.png" → "photo.zip"), bukan
+        // menumpuknya jadi "photo.png.zip".
+        let name = paths[0]
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "archive".to_string());
-        parent.join(format!("{stem}.zip"))
+        parent.join(format!("{}.zip", strip_last_ext(&name)))
     } else {
         let folder = parent
             .file_name()
@@ -200,6 +202,15 @@ fn strip_archive_ext(path: &Path) -> String {
     }
     match name.rsplit_once('.') {
         Some((stem, _)) if !stem.is_empty() => stem.to_string(),
+        _ => name,
+    }
+}
+
+/// Buang satu ekstensi terakhir dari nama (untuk penamaan archive). Nama tanpa
+/// titik atau dotfile (".bashrc") dibiarkan apa adanya.
+fn strip_last_ext(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() => stem,
         _ => name,
     }
 }
