@@ -115,30 +115,33 @@ pub fn sevenzip_compress(
 }
 
 /// Parse output `7z l -slt` menjadi daftar [`Entry`].
+#[derive(Default)]
+struct SltAcc {
+    path: Option<String>,
+    size: u64,
+    packed: u64,
+    is_dir: bool,
+    modified: Option<String>,
+    crc: Option<u32>,
+}
+
 fn parse_7z_slt(stdout: &str) -> Vec<Entry> {
     let mut entries = Vec::new();
     let mut started = false;
-    let mut path: Option<String> = None;
-    let mut size: u64 = 0;
-    let mut packed: u64 = 0;
-    let mut is_dir = false;
+    let mut acc = SltAcc::default();
 
-    let flush = |entries: &mut Vec<Entry>,
-                 path: &mut Option<String>,
-                 size: &mut u64,
-                 packed: &mut u64,
-                 is_dir: &mut bool| {
-        if let Some(name) = path.take() {
+    let flush = |entries: &mut Vec<Entry>, acc: &mut SltAcc| {
+        if let Some(name) = acc.path.take() {
             entries.push(Entry {
                 name,
-                size: *size,
-                compressed_size: *packed,
-                is_dir: *is_dir,
+                size: acc.size,
+                compressed_size: acc.packed,
+                is_dir: acc.is_dir,
+                modified: acc.modified.take(),
+                crc32: acc.crc.take(),
             });
         }
-        *size = 0;
-        *packed = 0;
-        *is_dir = false;
+        *acc = SltAcc::default();
     };
 
     for line in stdout.lines() {
@@ -151,25 +154,28 @@ fn parse_7z_slt(stdout: &str) -> Vec<Entry> {
         }
         let line = line.trim_end();
         if line.is_empty() {
-            flush(&mut entries, &mut path, &mut size, &mut packed, &mut is_dir);
+            flush(&mut entries, &mut acc);
             continue;
         }
         if let Some((k, v)) = line.split_once(" = ") {
             match k {
-                "Path" => path = Some(v.to_string()),
-                "Size" => size = v.parse().unwrap_or(0),
-                "Packed Size" => packed = v.parse().unwrap_or(0),
-                "Folder" => is_dir = v == "+",
+                "Path" => acc.path = Some(v.to_string()),
+                "Size" => acc.size = v.parse().unwrap_or(0),
+                "Packed Size" => acc.packed = v.parse().unwrap_or(0),
+                "Folder" => acc.is_dir = v == "+",
                 "Attributes" => {
                     if v.starts_with('D') || v.contains("D_") {
-                        is_dir = true;
+                        acc.is_dir = true;
                     }
                 }
+                // "2005-09-03 13:32:50" → ambil menit-presisi "YYYY-MM-DD HH:MM".
+                "Modified" if v.len() >= 16 => acc.modified = Some(v[..16].to_string()),
+                "CRC" => acc.crc = u32::from_str_radix(v.trim(), 16).ok(),
                 _ => {}
             }
         }
     }
-    flush(&mut entries, &mut path, &mut size, &mut packed, &mut is_dir);
+    flush(&mut entries, &mut acc);
     entries
 }
 
@@ -187,12 +193,7 @@ pub fn unrar_list(archive: &Path) -> Result<Vec<Entry>> {
     Ok(out
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|name| Entry {
-            name: name.to_string(),
-            size: 0,
-            compressed_size: 0,
-            is_dir: name.ends_with('/'),
-        })
+        .map(|name| Entry::basic(name.to_string(), 0, 0, name.ends_with('/')))
         .collect())
 }
 

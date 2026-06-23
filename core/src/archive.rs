@@ -27,6 +27,46 @@ pub struct Entry {
     pub size: u64,
     pub compressed_size: u64,
     pub is_dir: bool,
+    /// Waktu modifikasi terformat `"YYYY-MM-DD HH:MM"` bila tersedia.
+    pub modified: Option<String>,
+    /// Checksum CRC32 (tersedia untuk zip; None untuk format tanpa CRC).
+    pub crc32: Option<u32>,
+}
+
+impl Entry {
+    /// Entry minimal tanpa metadata waktu/CRC (dipakai backend yang tidak
+    /// mengeksposnya).
+    pub(crate) fn basic(name: String, size: u64, compressed_size: u64, is_dir: bool) -> Self {
+        Entry {
+            name,
+            size,
+            compressed_size,
+            is_dir,
+            modified: None,
+            crc32: None,
+        }
+    }
+}
+
+/// Format epoch detik (UTC) → `"YYYY-MM-DD HH:MM"`. Algoritma civil-from-days
+/// (Howard Hinnant) agar tidak butuh dependensi tanggal.
+pub(crate) fn fmt_epoch(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hour, minute) = ((rem / 3600) as u32, (rem % 3600 / 60) as u32);
+
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let year = if month <= 2 { year + 1 } else { year };
+
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
 /// Jenis archive lengkap, termasuk apakah ia tar-compound atau stream tunggal.
@@ -156,12 +196,12 @@ pub fn list(archive: &Path, password: Option<&str>) -> Result<Vec<Entry>> {
             extract::list_tar(reader)
         }
         ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
-            Ok(vec![Entry {
-                name: single_output_name(archive),
-                size: 0,
-                compressed_size: archive.metadata()?.len(),
-                is_dir: false,
-            }])
+            Ok(vec![Entry::basic(
+                single_output_name(archive),
+                0,
+                archive.metadata()?.len(),
+                false,
+            )])
         }
         ArchiveKind::SevenZip => subprocess::sevenzip_list(archive),
         ArchiveKind::Rar => subprocess::unrar_list(archive),
@@ -256,11 +296,25 @@ fn list_zip(archive: &Path) -> Result<Vec<Entry>> {
     for i in 0..ar.len() {
         // `by_index_raw` membaca metadata tanpa butuh password (untuk listing).
         let e = ar.by_index_raw(i).map_err(zip_err)?;
+        let modified = e.last_modified().map(|d| {
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}",
+                d.year(),
+                d.month(),
+                d.day(),
+                d.hour(),
+                d.minute()
+            )
+        });
+        let is_dir = e.is_dir();
         out.push(Entry {
             name: e.name().to_string(),
             size: e.size(),
             compressed_size: e.compressed_size(),
-            is_dir: e.is_dir(),
+            is_dir,
+            modified,
+            // CRC tidak bermakna untuk entry direktori.
+            crc32: if is_dir { None } else { Some(e.crc32()) },
         });
     }
     Ok(out)

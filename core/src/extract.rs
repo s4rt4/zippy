@@ -77,11 +77,14 @@ pub(crate) fn list_tar<R: Read>(reader: R) -> Result<Vec<Entry>> {
         let size = header.size().unwrap_or(0);
         let is_dir = header.entry_type().is_dir();
         let name = entry.path()?.to_string_lossy().into_owned();
+        let modified = header.mtime().ok().map(crate::archive::fmt_epoch);
         out.push(Entry {
             name,
             size,
             compressed_size: size,
             is_dir,
+            modified,
+            crc32: None,
         });
     }
     Ok(out)
