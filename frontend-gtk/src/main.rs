@@ -19,10 +19,16 @@ fn main() -> std::process::ExitCode {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    // Verb CLI (context menu) — di Sprint 0 belum ada verb yang ditangani,
-    // tapi jalur dispatch sudah disiapkan supaya GUI tidak ikut terganggu.
-    if let Some(code) = cli::try_dispatch(std::env::args().skip(1)) {
-        return code;
+    // Verb CLI (context menu): verb batch dijalankan tanpa GUI; path polos /
+    // --open meneruskan ke GUI dengan archive yang diminta.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match cli::dispatch(&args) {
+        cli::Dispatch::Handled(code) => return code,
+        cli::Dispatch::Gui(maybe_archive) => {
+            if let Some(path) = maybe_archive {
+                window::set_initial_archive(path);
+            }
+        }
     }
 
     let app = adw::Application::builder().application_id(APP_ID).build();

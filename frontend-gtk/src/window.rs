@@ -228,10 +228,23 @@ pub fn build_ui(app: &adw::Application) {
 
     window.present();
 
-    if let Some(p) = std::env::var_os("ZIPPY_OPEN") {
+    // Archive dari argumen CLI (path polos / --open / MIME handler).
+    if let Some(p) = INITIAL_ARCHIVE.with(|c| c.borrow_mut().take()) {
+        load_archive(&ui, p);
+    } else if let Some(p) = std::env::var_os("ZIPPY_OPEN") {
         load_archive(&ui, PathBuf::from(p));
     }
     maybe_bench(app);
+}
+
+thread_local! {
+    /// Archive yang diminta dibuka dari argumen CLI (di-set sebelum `app.run`).
+    static INITIAL_ARCHIVE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Set archive yang akan dibuka otomatis saat GUI start (dipanggil dari `main`).
+pub fn set_initial_archive(path: PathBuf) {
+    INITIAL_ARCHIVE.with(|c| *c.borrow_mut() = Some(path));
 }
 
 // ---------------------------------------------------------------------------
