@@ -15,7 +15,15 @@ import subprocess
 
 import gi
 
-gi.require_version("Nautilus", "4.0")
+# Versi namespace Nautilus berbeda antar-distro (Fedora 43 = 4.1). Pilih versi
+# yang tersedia / sudah ter-load oleh host; require_version untuk versi yang
+# tidak cocok melempar ValueError, jadi kita coba berurutan.
+for _v in ("4.1", "4.0"):
+    try:
+        gi.require_version("Nautilus", _v)
+        break
+    except ValueError:
+        continue
 from gi.repository import GObject, Nautilus  # noqa: E402
 
 ARCHIVE_EXTS = (
