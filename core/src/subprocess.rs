@@ -5,12 +5,14 @@
 //! - Password dikirim via **stdin**, tidak pernah lewat argv.
 //! - Cleanup output parsial saat operasi di-cancel.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::archive::Entry;
+use crate::cancel::CancelToken;
 use crate::error::{Error, Result};
 use crate::progress::{ProgressEvent, ProgressSink};
 
@@ -56,6 +58,7 @@ pub fn sevenzip_list(archive: &Path) -> Result<Vec<Entry>> {
             .arg("--")
             .arg(archive),
         None,
+        None,
     )?;
     Ok(parse_7z_slt(&out))
 }
@@ -65,6 +68,7 @@ pub fn sevenzip_extract(
     archive: &Path,
     dest: &Path,
     password: Option<&str>,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     let start = Instant::now();
@@ -76,7 +80,7 @@ pub fn sevenzip_extract(
         .arg(format!("-o{}", dest.display()))
         .arg("--")
         .arg(archive);
-    run_capture(&mut cmd, password)?;
+    run_capture(&mut cmd, password, Some(cancel))?;
 
     progress.emit(ProgressEvent::Finished {
         elapsed_ms: start.elapsed().as_millis() as u64,
@@ -89,6 +93,7 @@ pub fn sevenzip_compress(
     inputs: &[&Path],
     dest: &Path,
     password: Option<&str>,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     let start = Instant::now();
@@ -101,7 +106,7 @@ pub fn sevenzip_compress(
     for input in inputs {
         cmd.arg(input);
     }
-    run_capture(&mut cmd, password)?;
+    run_capture(&mut cmd, password, Some(cancel))?;
 
     progress.emit(ProgressEvent::Finished {
         elapsed_ms: start.elapsed().as_millis() as u64,
@@ -174,7 +179,11 @@ fn parse_7z_slt(stdout: &str) -> Vec<Entry> {
 
 /// List isi archive RAR via `unrar lb` (nama saja).
 pub fn unrar_list(archive: &Path) -> Result<Vec<Entry>> {
-    let out = run_capture(hardened_command("unrar").arg("lb").arg("--").arg(archive), None)?;
+    let out = run_capture(
+        hardened_command("unrar").arg("lb").arg("--").arg(archive),
+        None,
+        None,
+    )?;
     Ok(out
         .lines()
         .filter(|l| !l.is_empty())
@@ -192,6 +201,7 @@ pub fn unrar_extract(
     archive: &Path,
     dest: &Path,
     password: Option<&str>,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     let start = Instant::now();
@@ -202,7 +212,7 @@ pub fn unrar_extract(
 
     let mut cmd = hardened_command("unrar");
     cmd.arg("x").arg("-y").arg("--").arg(archive).arg(dest_arg);
-    run_capture(&mut cmd, password)?;
+    run_capture(&mut cmd, password, Some(cancel))?;
 
     progress.emit(ProgressEvent::Finished {
         elapsed_ms: start.elapsed().as_millis() as u64,
@@ -215,7 +225,16 @@ pub fn unrar_extract(
 // ---------------------------------------------------------------------------
 
 /// Jalankan command, kirim `password` (bila ada) via stdin, kumpulkan stdout.
-fn run_capture(cmd: &mut Command, password: Option<&str>) -> Result<String> {
+///
+/// Bila `cancel` diberikan, child di-poll: saat dibatalkan child di-`kill` dan
+/// fungsi mengembalikan [`Error::Cancelled`]. stdout/stderr dikuras di thread
+/// terpisah agar pipe yang penuh tidak men-deadlock proses (mis. 7z mencetak
+/// daftar file panjang).
+fn run_capture(
+    cmd: &mut Command,
+    password: Option<&str>,
+    cancel: Option<&CancelToken>,
+) -> Result<String> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -229,8 +248,7 @@ fn run_capture(cmd: &mut Command, password: Option<&str>) -> Result<String> {
 
     // Password via stdin (tidak pernah argv). 7z meminta konfirmasi dua kali
     // saat membuat archive, jadi kirim dua baris untuk amannya.
-    if let Some(stdin) = child.stdin.take() {
-        let mut stdin = stdin;
+    if let Some(mut stdin) = child.stdin.take() {
         if let Some(pw) = password {
             let _ = writeln!(stdin, "{pw}");
             let _ = writeln!(stdin, "{pw}");
@@ -238,21 +256,53 @@ fn run_capture(cmd: &mut Command, password: Option<&str>) -> Result<String> {
         // stdin di-drop di sini → EOF.
     }
 
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), stderr);
-        if combined.to_lowercase().contains("password")
-            || combined.to_lowercase().contains("wrong password")
-            || combined.contains("CRC failed")
+    // Kuras stdout & stderr di thread sendiri (cegah deadlock pipe penuh).
+    let out_reader = drain_thread(child.stdout.take());
+    let err_reader = drain_thread(child.stderr.take());
+
+    let status = loop {
+        if let Some(token) = cancel {
+            if token.is_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = out_reader.join();
+                let _ = err_reader.join();
+                return Err(Error::Cancelled);
+            }
+        }
+        match child.try_wait()? {
+            Some(status) => break status,
+            None => thread::sleep(Duration::from_millis(50)),
+        }
+    };
+
+    let stdout = out_reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
+
+    if !status.success() {
+        let combined = format!("{stdout}{stderr}").to_lowercase();
+        if combined.contains("password")
+            || combined.contains("wrong password")
+            || combined.contains("crc failed")
         {
             return Err(Error::Password);
         }
         return Err(Error::Other(format!(
             "backend keluar dengan status {}: {}",
-            output.status,
+            status,
             stderr.trim()
         )));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(stdout)
+}
+
+/// Spawn thread yang membaca seluruh `reader` menjadi `String` (lossy UTF-8).
+fn drain_thread<R: Read + Send + 'static>(reader: Option<R>) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut r) = reader {
+            let _ = r.read_to_end(&mut buf);
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    })
 }

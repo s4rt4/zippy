@@ -12,6 +12,7 @@ use std::time::Instant;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 
+use crate::cancel::CancelToken;
 use crate::error::{Error, Result};
 use crate::extract;
 use crate::formats::{self, Format};
@@ -176,26 +177,33 @@ pub fn list(archive: &Path, password: Option<&str>) -> Result<Vec<Entry>> {
 // ---------------------------------------------------------------------------
 
 /// Extract seluruh isi `archive` ke `dest`.
+///
+/// `cancel` diperiksa di batas tiap entry dan di dalam loop salin byte; saat
+/// dibatalkan, file yang sedang ditulis dihapus dan fungsi mengembalikan
+/// [`Error::Cancelled`].
 pub fn extract_all(
     archive: &Path,
     dest: &Path,
     password: Option<&str>,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     fs::create_dir_all(dest)?;
     let kind = detect_kind(archive)?;
     match kind {
-        ArchiveKind::Zip => extract_zip(archive, dest, password, progress),
+        ArchiveKind::Zip => extract_zip(archive, dest, password, cancel, progress),
         k if k.is_tar_family() => {
             let input_size = archive.metadata()?.len();
             let reader = open_tar_reader(archive, k)?;
-            extract::extract_tar(reader, dest, input_size, progress)
+            extract::extract_tar(reader, dest, input_size, cancel, progress)
         }
         ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
-            extract_single(archive, dest, kind, progress)
+            extract_single(archive, dest, kind, cancel, progress)
         }
-        ArchiveKind::SevenZip => subprocess::sevenzip_extract(archive, dest, password, progress),
-        ArchiveKind::Rar => subprocess::unrar_extract(archive, dest, password, progress),
+        ArchiveKind::SevenZip => {
+            subprocess::sevenzip_extract(archive, dest, password, cancel, progress)
+        }
+        ArchiveKind::Rar => subprocess::unrar_extract(archive, dest, password, cancel, progress),
         _ => Err(Error::UnsupportedFormat),
     }
 }
@@ -206,23 +214,35 @@ pub fn extract_all(
 
 /// Buat archive baru `dest` dari kumpulan `inputs`. Format ditentukan dari
 /// ekstensi `dest`.
+///
+/// Bila operasi gagal di tengah jalan (termasuk Cancel), archive parsial `dest`
+/// dihapus agar tidak meninggalkan file rusak.
 pub fn compress(
     inputs: &[&Path],
     dest: &Path,
     password: Option<&str>,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     let kind = kind_from_ext(dest).ok_or(Error::UnsupportedFormat)?;
-    match kind {
-        ArchiveKind::Zip => compress_zip(inputs, dest, password, progress),
-        k if k.is_tar_family() => compress_tar(inputs, dest, k, progress),
+    let res = match kind {
+        ArchiveKind::Zip => compress_zip(inputs, dest, password, cancel, progress),
+        k if k.is_tar_family() => compress_tar(inputs, dest, k, cancel, progress),
         ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
-            compress_single(inputs, dest, kind, progress)
+            compress_single(inputs, dest, kind, cancel, progress)
         }
-        ArchiveKind::SevenZip => subprocess::sevenzip_compress(inputs, dest, password, progress),
+        ArchiveKind::SevenZip => {
+            subprocess::sevenzip_compress(inputs, dest, password, cancel, progress)
+        }
         ArchiveKind::Rar => Err(Error::Other("RAR compress tidak didukung (extract only)".into())),
         _ => Err(Error::UnsupportedFormat),
+    };
+    if res.is_err() {
+        // Best-effort: buang archive parsial. (Untuk 7z, file dibuat oleh child
+        // process; tetap kita coba hapus.)
+        let _ = fs::remove_file(dest);
     }
+    res
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +270,7 @@ fn extract_zip(
     archive: &Path,
     dest: &Path,
     password: Option<&str>,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     let start = Instant::now();
@@ -262,6 +283,7 @@ fn extract_zip(
     progress.emit(ProgressEvent::Started { total_files: total });
 
     for i in 0..total {
+        cancel.check()?;
         let mut e = match password {
             Some(pw) => ar.by_index_decrypt(i, pw.as_bytes()).map_err(zip_err)?,
             None => ar.by_index(i).map_err(zip_err)?,
@@ -273,8 +295,7 @@ fn extract_zip(
         if is_dir {
             fs::create_dir_all(&out)?;
         } else {
-            let mut w = File::create(&out)?;
-            extract::copy_guarded(&mut e, &mut w, &mut guard)?;
+            extract::copy_guarded_to_file(&mut e, &out, &mut guard, cancel)?;
         }
 
         progress.emit(ProgressEvent::FileProcessed { name, index: i });
@@ -290,6 +311,7 @@ fn compress_zip(
     inputs: &[&Path],
     dest: &Path,
     password: Option<&str>,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     let start = Instant::now();
@@ -311,7 +333,7 @@ fn compress_zip(
     let mut index = 0;
     for input in inputs {
         let base = input.parent().unwrap_or(Path::new(""));
-        zip_add(&mut zw, opts, base, input, progress, &mut index)?;
+        zip_add(&mut zw, opts, base, input, cancel, progress, &mut index)?;
     }
     zw.finish().map_err(zip_err)?;
 
@@ -326,9 +348,11 @@ fn zip_add<W: Write + std::io::Seek>(
     opts: zip::write::FileOptions<'_, ()>,
     base: &Path,
     path: &Path,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
     index: &mut usize,
 ) -> Result<()> {
+    cancel.check()?;
     let rel = path.strip_prefix(base).unwrap_or(path);
     let name = rel.to_string_lossy().replace('\\', "/");
 
@@ -339,7 +363,7 @@ fn zip_add<W: Write + std::io::Seek>(
         let mut entries: Vec<_> = fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
         entries.sort_by_key(|e| e.path());
         for e in entries {
-            zip_add(zw, opts, base, &e.path(), progress, index)?;
+            zip_add(zw, opts, base, &e.path(), cancel, progress, index)?;
         }
     } else {
         zw.start_file(name.clone(), opts).map_err(zip_err)?;
@@ -387,6 +411,7 @@ fn compress_tar(
     inputs: &[&Path],
     dest: &Path,
     kind: ArchiveKind,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     let start = Instant::now();
@@ -398,31 +423,31 @@ fn compress_tar(
     match kind {
         ArchiveKind::Tar => {
             let mut b = tar::Builder::new(w);
-            write_tar_entries(&mut b, inputs)?;
+            write_tar_entries(&mut b, inputs, cancel)?;
             b.finish()?;
         }
         ArchiveKind::TarGz => {
             let enc = GzEncoder::new(w, flate2::Compression::default());
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs)?;
+            write_tar_entries(&mut b, inputs, cancel)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarBz2 => {
             let enc = bzip2::write::BzEncoder::new(w, bzip2::Compression::default());
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs)?;
+            write_tar_entries(&mut b, inputs, cancel)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarXz => {
             let enc = xz2::write::XzEncoder::new(w, 6);
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs)?;
+            write_tar_entries(&mut b, inputs, cancel)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarZst => {
             let enc = zstd::stream::write::Encoder::new(w, 3)?;
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs)?;
+            write_tar_entries(&mut b, inputs, cancel)?;
             b.into_inner()?.finish()?;
         }
         _ => return Err(Error::UnsupportedFormat),
@@ -434,8 +459,15 @@ fn compress_tar(
     Ok(())
 }
 
-fn write_tar_entries<W: Write>(builder: &mut tar::Builder<W>, inputs: &[&Path]) -> Result<()> {
+fn write_tar_entries<W: Write>(
+    builder: &mut tar::Builder<W>,
+    inputs: &[&Path],
+    cancel: &CancelToken,
+) -> Result<()> {
     for input in inputs {
+        // Granularitas per-input: `append_dir_all` berjalan opaque, jadi Cancel
+        // baru terdeteksi di batas antar-input (cukup untuk banyak input kecil).
+        cancel.check()?;
         let name = input
             .file_name()
             .ok_or_else(|| Error::Other(format!("input tanpa nama: {}", input.display())))?;
@@ -464,6 +496,7 @@ fn extract_single(
     archive: &Path,
     dest: &Path,
     kind: ArchiveKind,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     let start = Instant::now();
@@ -482,8 +515,7 @@ fn extract_single(
     let mut guard = DecompressionGuard::new(input_size);
 
     progress.emit(ProgressEvent::Started { total_files: 1 });
-    let mut w = File::create(&out)?;
-    extract::copy_guarded(&mut r, &mut w, &mut guard)?;
+    extract::copy_guarded_to_file(&mut r, &out, &mut guard, cancel)?;
     progress.emit(ProgressEvent::FileProcessed {
         name,
         index: 0,
@@ -498,6 +530,7 @@ fn compress_single(
     inputs: &[&Path],
     dest: &Path,
     kind: ArchiveKind,
+    cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     if inputs.len() != 1 || inputs[0].is_dir() {
@@ -517,7 +550,17 @@ fn compress_single(
         ArchiveKind::Zst => Box::new(zstd::stream::write::Encoder::new(w, 3)?.auto_finish()),
         _ => return Err(Error::UnsupportedFormat),
     };
-    std::io::copy(&mut input, &mut enc)?;
+    // Loop manual (bukan io::copy) agar Cancel bisa menghentikan file besar di
+    // tengah jalan.
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        cancel.check()?;
+        let n = input.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        enc.write_all(&buf[..n])?;
+    }
     enc.flush()?;
     drop(enc); // pastikan trailer encoder ditulis
 

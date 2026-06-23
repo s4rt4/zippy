@@ -8,6 +8,7 @@
 //! menyusul di v0.1 (Sprint 1-3).
 
 pub mod archive;
+pub mod cancel;
 pub mod error;
 pub mod extract;
 pub mod formats;
@@ -16,6 +17,7 @@ pub mod safety;
 pub mod subprocess;
 
 pub use archive::{ArchiveKind, Entry};
+pub use cancel::CancelToken;
 pub use error::{Error, Result};
 pub use formats::Format;
 pub use progress::{NullSink, ProgressEvent, ProgressSink};

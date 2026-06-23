@@ -16,7 +16,7 @@ use gtk4 as gtk;
 use gtk4::gio;
 use gtk4::glib;
 use libadwaita as adw;
-use zippy_core::{Error, ProgressEvent, ProgressSink};
+use zippy_core::{CancelToken, Error, ProgressEvent};
 
 use crate::file_list::{self, FileListView};
 use crate::progress::ChannelSink;
@@ -30,9 +30,13 @@ struct Ui {
     revealer: gtk::Revealer,
     bar: gtk::ProgressBar,
     progress_label: gtk::Label,
+    cancel_btn: gtk::Button,
     extract_btn: gtk::Button,
     /// Archive yang sedang dibuka (None bila belum ada).
     current: RefCell<Option<PathBuf>>,
+    /// Token operasi yang sedang berjalan (None bila idle) — di-cancel oleh
+    /// [`Ui::cancel_btn`].
+    cancel: RefCell<Option<CancelToken>>,
 }
 
 pub fn build_ui(app: &adw::Application) {
@@ -69,16 +73,27 @@ pub fn build_ui(app: &adw::Application) {
         .build();
     status.add_css_class("dim-label");
 
-    // Progress: label + bar dalam revealer (tersembunyi saat idle).
-    let bar = gtk::ProgressBar::builder().show_text(false).hexpand(true).build();
+    // Progress: label di atas; baris [bar | Cancel] di bawah. Dalam revealer
+    // (tersembunyi saat idle).
+    let bar = gtk::ProgressBar::builder().show_text(false).hexpand(true).valign(gtk::Align::Center).build();
     let progress_label = gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::Middle).build();
+    let cancel_btn = gtk::Button::builder()
+        .icon_name("process-stop-symbolic")
+        .tooltip_text("Batalkan operasi")
+        .build();
+    cancel_btn.add_css_class("flat");
+
+    let progress_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    progress_row.append(&bar);
+    progress_row.append(&cancel_btn);
+
     let progress_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
     progress_box.set_margin_start(8);
     progress_box.set_margin_end(8);
     progress_box.set_margin_top(4);
     progress_box.set_margin_bottom(8);
     progress_box.append(&progress_label);
-    progress_box.append(&bar);
+    progress_box.append(&progress_row);
 
     let revealer = gtk::Revealer::builder()
         .transition_type(gtk::RevealerTransitionType::SlideUp)
@@ -115,8 +130,22 @@ pub fn build_ui(app: &adw::Application) {
         revealer,
         bar,
         progress_label,
+        cancel_btn: cancel_btn.clone(),
         extract_btn: extract_btn.clone(),
         current: RefCell::new(None),
+        cancel: RefCell::new(None),
+    });
+
+    cancel_btn.connect_clicked({
+        let ui = ui.clone();
+        move |btn| {
+            if let Some(token) = ui.cancel.borrow().as_ref() {
+                token.cancel();
+            }
+            // Cegah klik ganda; feedback bahwa pembatalan sedang diproses.
+            btn.set_sensitive(false);
+            ui.progress_label.set_text("Membatalkan…");
+        }
     });
 
     open_btn.connect_clicked({
@@ -235,6 +264,9 @@ fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, password: Option<St
     // `tx_ev`: stream progress (untuk progress bar). `tx_done`: hasil akhir
     // (untuk membedakan sukses / butuh-password / error lain). Worker menutup
     // `tx_ev` saat selesai (sink di-drop), lalu mengirim hasil ke `tx_done`.
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+
     let (tx_ev, rx_ev) = async_channel::unbounded();
     let (tx_done, rx_done) = async_channel::bounded(1);
     let worker_archive = archive.clone();
@@ -243,15 +275,23 @@ fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, password: Option<St
     std::thread::spawn(move || {
         let res = {
             let sink = ChannelSink::new(tx_ev);
-            zippy_core::archive::extract_all(&worker_archive, &worker_dest, worker_pw.as_deref(), &sink)
+            zippy_core::archive::extract_all(
+                &worker_archive,
+                &worker_dest,
+                worker_pw.as_deref(),
+                &cancel,
+                &sink,
+            )
             // sink drop di sini → rx_ev tertutup → loop progress UI berakhir.
         };
         let _ = tx_done.send_blocking(res);
     });
 
     ui.revealer.set_reveal_child(true);
+    ui.cancel_btn.set_sensitive(true);
     ui.bar.set_fraction(0.0);
     ui.progress_label.set_text("Memulai…");
+    schedule_dev_cancel(ui);
 
     let ui = ui.clone();
     glib::spawn_future_local(async move {
@@ -280,10 +320,15 @@ fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, password: Option<St
         }
 
         ui.revealer.set_reveal_child(false);
+        *ui.cancel.borrow_mut() = None;
         match rx_done.recv().await {
             Ok(Ok(())) => {
                 show_toast(&ui, "Extract selesai");
                 tracing::info!("extract selesai");
+            }
+            Ok(Err(Error::Cancelled)) => {
+                show_toast(&ui, "Extract dibatalkan");
+                tracing::info!("extract dibatalkan");
             }
             Ok(Err(Error::Password)) => {
                 // Salah/perlu password → minta lalu coba lagi.
@@ -377,25 +422,29 @@ fn choose_output(ui: &Rc<Ui>, inputs: Vec<PathBuf>) {
 }
 
 fn run_compress(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
-    let (tx, rx) = async_channel::unbounded();
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+
+    let (tx_ev, rx_ev) = async_channel::unbounded();
+    let (tx_done, rx_done) = async_channel::bounded(1);
     std::thread::spawn(move || {
-        let sink = ChannelSink::new(tx);
-        let refs: Vec<&std::path::Path> = inputs.iter().map(|p| p.as_path()).collect();
-        if let Err(e) = zippy_core::archive::compress(&refs, &dest, None, &sink) {
-            sink.emit(ProgressEvent::Error {
-                message: e.to_string(),
-            });
-        }
+        let res = {
+            let sink = ChannelSink::new(tx_ev);
+            let refs: Vec<&std::path::Path> = inputs.iter().map(|p| p.as_path()).collect();
+            zippy_core::archive::compress(&refs, &dest, None, &cancel, &sink)
+        };
+        let _ = tx_done.send_blocking(res);
     });
 
     ui.revealer.set_reveal_child(true);
+    ui.cancel_btn.set_sensitive(true);
     ui.bar.set_fraction(0.0);
     ui.progress_label.set_text("Mengompres…");
 
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         let mut total = 0usize;
-        while let Ok(ev) = rx.recv().await {
+        while let Ok(ev) = rx_ev.recv().await {
             match ev {
                 ProgressEvent::Started { total_files } => total = total_files,
                 ProgressEvent::FileProcessed { name, index } => {
@@ -406,16 +455,37 @@ fn run_compress(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
                     }
                     ui.progress_label.set_text(&name);
                 }
-                ProgressEvent::BytesDone { .. } => {}
-                ProgressEvent::Finished { elapsed_ms } => {
-                    ui.revealer.set_reveal_child(false);
-                    show_toast(&ui, &format!("Archive dibuat ({elapsed_ms} ms)"));
-                }
-                ProgressEvent::Error { message } => {
-                    ui.revealer.set_reveal_child(false);
-                    show_toast(&ui, &format!("Gagal kompres: {message}"));
-                }
+                ProgressEvent::BytesDone { .. }
+                | ProgressEvent::Finished { .. }
+                | ProgressEvent::Error { .. } => {}
             }
+        }
+
+        ui.revealer.set_reveal_child(false);
+        *ui.cancel.borrow_mut() = None;
+        match rx_done.recv().await {
+            Ok(Ok(())) => show_toast(&ui, "Archive dibuat"),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Kompres dibatalkan"),
+            Ok(Err(e)) => show_toast(&ui, &format!("Gagal kompres: {e}")),
+            Err(_) => {}
+        }
+    });
+}
+
+/// Dev-hook: bila `ZIPPY_CANCEL_MS=<ms>` diset, batalkan operasi yang sedang
+/// berjalan setelah `ms` milidetik (mensimulasikan klik tombol Cancel) — untuk
+/// uji headless jalur pembatalan.
+fn schedule_dev_cancel(ui: &Rc<Ui>) {
+    let Some(ms) = std::env::var("ZIPPY_CANCEL_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    else {
+        return;
+    };
+    let ui = ui.clone();
+    glib::timeout_add_local_once(Duration::from_millis(ms), move || {
+        if let Some(token) = ui.cancel.borrow().as_ref() {
+            token.cancel();
         }
     });
 }
