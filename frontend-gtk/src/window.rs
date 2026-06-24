@@ -18,7 +18,7 @@ use gtk4::gdk;
 use gtk4::gio;
 use gtk4::glib;
 use libadwaita as adw;
-use zippy_core::{ArchiveKind, CancelToken, Entry, Error, ProgressEvent, ProgressSink};
+use zippy_core::{ArchiveKind, CancelToken, Entry, Error, Level, ProgressEvent, ProgressSink};
 
 use crate::file_list::{self, FileListView, Row};
 use crate::progress::ChannelSink;
@@ -271,7 +271,7 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     add_action(&group, "add", ui, compress_dialog);
     add_action(&group, "extract", ui, extract_dialog);
     add_action(&group, "test", ui, test_dialog);
-    add_action(&group, "delete", ui, |ui| show_toast(ui, "Delete belum didukung"));
+    add_action(&group, "delete", ui, delete_selected);
     add_action(&group, "find", ui, toggle_search);
     add_action(&group, "wizard", ui, |ui| show_toast(ui, "Wizard belum didukung"));
     add_action(&group, "about", ui, show_about);
@@ -364,7 +364,7 @@ fn build_toolbar(ui: &Rc<Ui>, extract_btn: &gtk::Button) -> gtk::Box {
     let delete = tool_button("archive-remove", "Delete");
     delete.connect_clicked({
         let ui = ui.clone();
-        move |_| show_toast(&ui, "Delete belum didukung")
+        move |_| delete_selected(&ui)
     });
     let find = tool_button("edit-find", "Find");
     find.connect_clicked({
@@ -591,13 +591,17 @@ fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
     let (tx, rx) = async_channel::bounded(1);
     let worker_path = path.clone();
     std::thread::spawn(move || {
-        let _ = tx.send_blocking(zippy_core::archive::list(&worker_path, None));
+        let res = zippy_core::archive::list(&worker_path, None);
+        // Peringatan enkripsi lemah hanya relevan bila list sukses.
+        let weak = res.is_ok()
+            && zippy_core::archive::has_weak_encryption(&worker_path).unwrap_or(false);
+        let _ = tx.send_blocking((res, weak));
     });
 
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         match rx.recv().await {
-            Ok(Ok(entries)) => {
+            Ok((Ok(entries), weak)) => {
                 let total = entries.len();
                 *ui.entries.borrow_mut() = entries;
                 ui.cwd.borrow_mut().clear();
@@ -605,6 +609,12 @@ fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
                 ui.extract_btn.set_sensitive(true);
                 render(&ui);
                 tracing::info!(entries = total, archive = %path.display(), "archive dibuka");
+                if weak {
+                    show_toast(
+                        &ui,
+                        "⚠ Archive memakai enkripsi ZipCrypto lemah — pertimbangkan ulang dengan AES-256",
+                    );
+                }
                 if let Some(dir) = std::env::var_os("ZIPPY_EXTRACT_TO") {
                     let pw = std::env::var("ZIPPY_PASSWORD").ok();
                     run_extract(&ui, path.clone(), PathBuf::from(dir), pw);
@@ -613,7 +623,7 @@ fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
                     run_test(&ui, path.clone(), std::env::var("ZIPPY_PASSWORD").ok());
                 }
             }
-            Ok(Err(e)) => {
+            Ok((Err(e), _)) => {
                 ui.status.set_text("Gagal membuka archive");
                 show_toast(&ui, &format!("Gagal membuka: {e}"));
             }
@@ -827,27 +837,94 @@ fn choose_output(ui: &Rc<Ui>, inputs: Vec<PathBuf>) {
     });
 }
 
-/// Lanjut ke compress; bila format `dest` mendukung enkripsi (zip/7z), tawarkan
-/// dialog password lebih dulu (kosong = tanpa enkripsi).
-fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
-    let supports_pw = matches!(
-        zippy_core::archive::kind_from_ext(&dest),
-        Some(ArchiveKind::Zip | ArchiveKind::SevenZip)
-    );
-    if !supports_pw {
-        run_compress(ui, inputs, dest, None);
-        return;
+/// Urutan item dropdown level ↔ [`Level`] core. Indeks dipakai dua arah.
+const LEVEL_LABELS: [&str; 4] = [
+    "Simpan (tanpa kompresi)",
+    "Cepat",
+    "Normal",
+    "Maksimal",
+];
+
+fn level_from_index(i: u32) -> Level {
+    match i {
+        0 => Level::Store,
+        1 => Level::Fastest,
+        3 => Level::Best,
+        _ => Level::Normal,
     }
-    ask_password(
-        ui,
-        "Lindungi Archive",
-        "Masukkan password untuk enkripsi AES-256 (kosongkan untuk tanpa password).",
-        "Buat",
-        move |ui, pw| run_compress(ui, inputs.clone(), dest.clone(), pw),
-    );
 }
 
-fn run_compress(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf, password: Option<String>) {
+/// Dialog opsi compress: pilih tingkat kompresi dan (untuk zip/7z) password
+/// enkripsi AES-256. Untuk `.tar` polos (tanpa kompresi & tanpa enkripsi)
+/// langsung jalan tanpa dialog.
+fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
+    let kind = zippy_core::archive::kind_from_ext(&dest);
+    let supports_pw = matches!(kind, Some(ArchiveKind::Zip | ArchiveKind::SevenZip));
+    let supports_level = !matches!(kind, Some(ArchiveKind::Tar));
+
+    // Plain tar: tak ada yang bisa diatur → langsung kompres.
+    if !supports_pw && !supports_level {
+        run_compress(ui, inputs, dest, Level::default(), None);
+        return;
+    }
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+
+    let level_dropdown = gtk::DropDown::from_strings(&LEVEL_LABELS);
+    level_dropdown.set_selected(2); // Normal
+    if supports_level {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.append(&gtk::Label::new(Some("Tingkat kompresi:")));
+        level_dropdown.set_hexpand(true);
+        row.append(&level_dropdown);
+        content.append(&row);
+    }
+
+    let pw_entry = gtk::PasswordEntry::builder()
+        .show_peek_icon(true)
+        .activates_default(true)
+        .build();
+    if supports_pw {
+        pw_entry.set_placeholder_text(Some("Password AES-256 (opsional)"));
+        content.append(&pw_entry);
+    }
+
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some("Buat Archive"), None);
+    dialog.set_extra_child(Some(&content));
+    dialog.add_response("cancel", "Batal");
+    dialog.add_response("ok", "Buat");
+    dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("ok"));
+    dialog.set_close_response("cancel");
+
+    let ui = ui.clone();
+    dialog.connect_response(None, move |_, resp| {
+        if resp != "ok" {
+            return;
+        }
+        let level = if supports_level {
+            level_from_index(level_dropdown.selected())
+        } else {
+            Level::default()
+        };
+        let pw = if supports_pw {
+            let t = pw_entry.text().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        } else {
+            None
+        };
+        run_compress(&ui, inputs.clone(), dest.clone(), level, pw);
+    });
+    dialog.present();
+}
+
+fn run_compress(
+    ui: &Rc<Ui>,
+    inputs: Vec<PathBuf>,
+    dest: PathBuf,
+    level: Level,
+    password: Option<String>,
+) {
     let cancel = CancelToken::new();
     *ui.cancel.borrow_mut() = Some(cancel.clone());
 
@@ -857,7 +934,14 @@ fn run_compress(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf, password: Opti
         let res = {
             let sink = ChannelSink::new(tx_ev);
             let refs: Vec<&Path> = inputs.iter().map(|p| p.as_path()).collect();
-            zippy_core::archive::compress(&refs, &dest, password.as_deref(), &cancel, &sink)
+            zippy_core::archive::compress_with_level(
+                &refs,
+                &dest,
+                password.as_deref(),
+                level,
+                &cancel,
+                &sink,
+            )
         };
         let _ = tx_done.send_blocking(res);
     });
@@ -1177,6 +1261,7 @@ fn build_context_menu(ui: &Rc<Ui>) -> gio::Menu {
             menu.append_section(None, &s);
             let s2 = gio::Menu::new();
             s2.append(Some("Salin nama"), Some("win.copy_name"));
+            s2.append(Some("Hapus folder ini"), Some("win.delete"));
             s2.append(Some("Properti…"), Some("win.props"));
             menu.append_section(None, &s2);
         }
@@ -1187,6 +1272,7 @@ fn build_context_menu(ui: &Rc<Ui>) -> gio::Menu {
             menu.append_section(None, &s);
             let s2 = gio::Menu::new();
             s2.append(Some("Salin nama"), Some("win.copy_name"));
+            s2.append(Some("Hapus"), Some("win.delete"));
             s2.append(Some("Properti…"), Some("win.props"));
             menu.append_section(None, &s2);
         }
@@ -1198,6 +1284,10 @@ fn build_context_menu(ui: &Rc<Ui>) -> gio::Menu {
                 Some("win.extract_sel"),
             );
             s.append(Some("Salin nama"), Some("win.copy_name"));
+            s.append(
+                Some(&format!("Hapus {} item terpilih", many.len())),
+                Some("win.delete"),
+            );
             menu.append_section(None, &s);
         }
         _ => {}
@@ -1432,6 +1522,137 @@ fn run_extract_selected(
                 );
             }
             Ok(Err(e)) => show_toast(&ui, &format!("Gagal extract: {e}")),
+            Err(_) => {}
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Delete (hapus entri in-place)
+// ---------------------------------------------------------------------------
+
+fn delete_selected(ui: &Rc<Ui>) {
+    let archive = match ui.current.borrow().clone() {
+        Some(p) => p,
+        None => return,
+    };
+
+    // Format yang tidak mendukung hapus: tolak lebih awal dengan pesan jelas.
+    match zippy_core::archive::kind_from_ext(&archive) {
+        Some(ArchiveKind::Rar) => {
+            show_toast(ui, "RAR tidak mendukung hapus (extract-only)");
+            return;
+        }
+        Some(ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst) => {
+            show_toast(ui, "Format stream tunggal tak punya entri untuk dihapus");
+            return;
+        }
+        _ => {}
+    }
+
+    // Kumpulkan path entri terpilih (folder cukup pathnya — core menghapus
+    // isinya secara rekursif). Baris ".." diabaikan.
+    let names: Vec<String> = selected_entries(ui)
+        .iter()
+        .filter(|o| !o.is_parent())
+        .map(|o| o.full_path())
+        .collect();
+    if names.is_empty() {
+        show_toast(ui, "Pilih entri yang akan dihapus");
+        return;
+    }
+
+    let body = if names.len() == 1 {
+        format!("Hapus \"{}\" dari archive? Tindakan ini tidak bisa dibatalkan.", names[0])
+    } else {
+        format!("Hapus {} item dari archive? Tindakan ini tidak bisa dibatalkan.", names.len())
+    };
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some("Hapus dari Archive"), Some(&body));
+    dialog.add_response("cancel", "Batal");
+    dialog.add_response("delete", "Hapus");
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+
+    let ui = ui.clone();
+    dialog.connect_response(None, move |_, resp| {
+        if resp == "delete" {
+            run_delete(&ui, archive.clone(), names.clone(), None);
+        }
+    });
+    dialog.present();
+}
+
+fn run_delete(ui: &Rc<Ui>, archive: PathBuf, names: Vec<String>, password: Option<String>) {
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+
+    let (tx_ev, rx_ev) = async_channel::unbounded();
+    let (tx_done, rx_done) = async_channel::bounded(1);
+    let worker_archive = archive.clone();
+    let worker_names = names.clone();
+    let worker_pw = password.clone();
+    std::thread::spawn(move || {
+        let res = {
+            let sink = ChannelSink::new(tx_ev);
+            let refs: Vec<&str> = worker_names.iter().map(|s| s.as_str()).collect();
+            zippy_core::archive::delete(
+                &worker_archive,
+                &refs,
+                worker_pw.as_deref(),
+                &cancel,
+                &sink,
+            )
+        };
+        let _ = tx_done.send_blocking(res);
+    });
+
+    ui.revealer.set_reveal_child(true);
+    ui.cancel_btn.set_sensitive(true);
+    ui.bar.set_fraction(0.0);
+    ui.progress_label.set_text("Menghapus…");
+
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let mut total = 0usize;
+        while let Ok(ev) = rx_ev.recv().await {
+            match ev {
+                ProgressEvent::Started { total_files } => total = total_files,
+                ProgressEvent::FileProcessed { name, index } => {
+                    if total > 0 {
+                        ui.bar.set_fraction((index + 1) as f64 / total as f64);
+                    } else {
+                        ui.bar.pulse();
+                    }
+                    ui.progress_label.set_text(&name);
+                }
+                _ => {}
+            }
+        }
+        ui.revealer.set_reveal_child(false);
+        *ui.cancel.borrow_mut() = None;
+        match rx_done.recv().await {
+            Ok(Ok(())) => {
+                show_toast(&ui, "Entri dihapus");
+                // Muat ulang agar daftar mencerminkan archive baru.
+                load_archive(&ui, archive.clone());
+            }
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Hapus dibatalkan"),
+            Ok(Err(Error::Password)) => {
+                let archive = archive.clone();
+                let names = names.clone();
+                ask_password(
+                    &ui,
+                    "Archive Terenkripsi",
+                    "Masukkan password untuk menghapus entri.",
+                    "Hapus",
+                    move |ui, pw| match pw {
+                        Some(pw) => run_delete(ui, archive.clone(), names.clone(), Some(pw)),
+                        None => show_toast(ui, "Password kosong"),
+                    },
+                );
+            }
+            Ok(Err(e)) => show_toast(&ui, &format!("Gagal hapus: {e}")),
             Err(_) => {}
         }
     });

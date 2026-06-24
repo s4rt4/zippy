@@ -24,3 +24,18 @@ cargo +nightly fuzz run list         # parser arsip (zip/tar) atas input korup
 
 Crate ini **detached** dari workspace induk (punya `[workspace]` sendiri) agar
 build rilis biasa tidak butuh nightly/libfuzzer.
+
+## Tanpa nightly: robustness test (stable)
+
+Bila nightly/`cargo-fuzz` tidak tersedia (mis. CI atau mesin dev tanpa rustup),
+jalankan `core/tests/robustness.rs` — "poor man's fuzz" deterministik yang
+menghantam KETIGA entry point yang sama (`detect`, `safe_join`, `list`) dengan
+ribuan input acak ber-seed tetap + kasus tepi terkurasi, dan menegakkan invarian
+yang sama (no-panic + Zip Slip):
+
+```sh
+cargo test -p zippy-core --test robustness
+```
+
+Ini bukan pengganti penuh libFuzzer (tak ada coverage-guided mutation), tapi
+menjaga regresi no-panic/keamanan tetap terjaga di stable.

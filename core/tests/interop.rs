@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use zippy_core::archive::{compress, extract_all, list};
+use zippy_core::archive::{compress, extract_all, has_weak_encryption, list};
 use zippy_core::{CancelToken, Error, NullSink};
 
 // ---------------------------------------------------------------------------
@@ -252,4 +252,36 @@ fn sevenzip_password_roundtrip() {
         Err(Error::Password) => {}
         other => panic!("harusnya Error::Password, dapat {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Deteksi ZipCrypto legasi (enkripsi lemah) vs AES-256
+// ---------------------------------------------------------------------------
+
+#[test]
+fn detects_legacy_zipcrypto_as_weak() {
+    if !have("zip") {
+        eprintln!("skip: tool `zip` tidak terpasang");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("secret.txt");
+    fs::write(&file, b"rahasia banget\n").unwrap();
+
+    // `zip -P` membuat arsip ber-enkripsi klasik (ZipCrypto), bukan AES.
+    let archive = tmp.path().join("legacy.zip");
+    run("zip", &["-j", "-P", "rahasia", s(&archive), s(&file)], None);
+
+    assert!(
+        has_weak_encryption(&archive).unwrap(),
+        "ZipCrypto legasi harus terdeteksi sebagai enkripsi lemah"
+    );
+
+    // Bandingkan: arsip AES-256 buatan Zippy → tidak lemah.
+    let aes = tmp.path().join("aes.zip");
+    compress(&[file.as_path()], &aes, Some("rahasia"), &nocancel(), &NullSink).unwrap();
+    assert!(
+        !has_weak_encryption(&aes).unwrap(),
+        "AES-256 bukan enkripsi lemah"
+    );
 }

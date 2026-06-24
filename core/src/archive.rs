@@ -86,6 +86,82 @@ pub enum ArchiveKind {
     Rar,
 }
 
+/// Tingkat kompresi yang dipilih user di dialog "Add". Dipetakan ke parameter
+/// numerik tiap backend lewat method di bawah (Planning Doc §6.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Level {
+    /// Tanpa kompresi (simpan apa adanya) — tercepat, ukuran terbesar.
+    Store,
+    /// Cepat (rasio rendah).
+    Fastest,
+    /// Seimbang (default) — pilihan WinRAR "Normal".
+    #[default]
+    Normal,
+    /// Maksimal (rasio tertinggi, paling lambat).
+    Best,
+}
+
+impl Level {
+    /// Level deflate untuk zip: `None` = default crate (≈6). `Store` ditangani
+    /// terpisah via `CompressionMethod::Stored`, jadi di sini diperlakukan ≈fast.
+    fn zip_deflate(self) -> Option<i64> {
+        match self {
+            Level::Store => Some(0),
+            Level::Fastest => Some(1),
+            Level::Normal => None,
+            Level::Best => Some(9),
+        }
+    }
+
+    /// Level flate2/gzip (0–9; 0 = tanpa kompresi).
+    fn flate2(self) -> flate2::Compression {
+        flate2::Compression::new(match self {
+            Level::Store => 0,
+            Level::Fastest => 1,
+            Level::Normal => 6,
+            Level::Best => 9,
+        })
+    }
+
+    /// Level bzip2 (1–9; tidak punya mode "store", `Store` dipetakan ke 1).
+    fn bzip2(self) -> bzip2::Compression {
+        bzip2::Compression::new(match self {
+            Level::Store | Level::Fastest => 1,
+            Level::Normal => 6,
+            Level::Best => 9,
+        })
+    }
+
+    /// Preset xz/LZMA (0–9).
+    fn xz(self) -> u32 {
+        match self {
+            Level::Store => 0,
+            Level::Fastest => 1,
+            Level::Normal => 6,
+            Level::Best => 9,
+        }
+    }
+
+    /// Level zstd (1–22; tidak ada "store", `Store` dipetakan ke 1).
+    fn zstd(self) -> i32 {
+        match self {
+            Level::Store | Level::Fastest => 1,
+            Level::Normal => 3,
+            Level::Best => 19,
+        }
+    }
+
+    /// Argumen `-mx=N` untuk 7-Zip (0 = store, 9 = ultra).
+    pub(crate) fn sevenzip_mx(self) -> u32 {
+        match self {
+            Level::Store => 0,
+            Level::Fastest => 1,
+            Level::Normal => 5,
+            Level::Best => 9,
+        }
+    }
+}
+
 impl ArchiveKind {
     fn is_tar_family(self) -> bool {
         matches!(
@@ -440,15 +516,28 @@ pub fn compress(
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
+    compress_with_level(inputs, dest, password, Level::default(), cancel, progress)
+}
+
+/// Seperti [`compress`] tetapi dengan tingkat kompresi eksplisit. Untuk format
+/// tanpa kompresi (`.tar` polos) `level` diabaikan.
+pub fn compress_with_level(
+    inputs: &[&Path],
+    dest: &Path,
+    password: Option<&str>,
+    level: Level,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
     let kind = kind_from_ext(dest).ok_or(Error::UnsupportedFormat)?;
     let res = match kind {
-        ArchiveKind::Zip => compress_zip(inputs, dest, password, cancel, progress),
-        k if k.is_tar_family() => compress_tar(inputs, dest, k, cancel, progress),
+        ArchiveKind::Zip => compress_zip(inputs, dest, password, level, cancel, progress),
+        k if k.is_tar_family() => compress_tar(inputs, dest, k, level, cancel, progress),
         ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
-            compress_single(inputs, dest, kind, cancel, progress)
+            compress_single(inputs, dest, kind, level, cancel, progress)
         }
         ArchiveKind::SevenZip => {
-            subprocess::sevenzip_compress(inputs, dest, password, cancel, progress)
+            subprocess::sevenzip_compress(inputs, dest, password, level, cancel, progress)
         }
         ArchiveKind::Rar => Err(Error::Other("RAR compress tidak didukung (extract only)".into())),
         _ => Err(Error::UnsupportedFormat),
@@ -459,6 +548,288 @@ pub fn compress(
         let _ = fs::remove_file(dest);
     }
     res
+}
+
+// ---------------------------------------------------------------------------
+// Delete (hapus entri — edit in-place)
+// ---------------------------------------------------------------------------
+
+/// Hapus entri `names` dari `archive` (edit in-place). Setiap nama yang
+/// merupakan direktori ikut menghapus seluruh isinya (pencocokan prefiks).
+///
+/// Implementasi tulis-ulang ke file sementara di direktori yang sama lalu
+/// `rename` menimpa archive asal — atomik-ish dan tidak meninggalkan archive
+/// rusak bila gagal/cancel di tengah jalan. ZIP & TAR ditangani native (entri
+/// disalin mentah tanpa rekompresi untuk ZIP); 7z lewat `7z d`. RAR dan stream
+/// tunggal (gz/bz2/xz/zst) tidak mendukung penghapusan entri.
+pub fn delete(
+    archive: &Path,
+    names: &[&str],
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let kind = detect_kind(archive)?;
+    match kind {
+        ArchiveKind::Zip => delete_zip(archive, names, password, cancel, progress),
+        k if k.is_tar_family() => delete_tar(archive, k, names, cancel, progress),
+        ArchiveKind::SevenZip => {
+            subprocess::sevenzip_delete(archive, names, password, cancel, progress)
+        }
+        ArchiveKind::Rar => Err(Error::Other("RAR tidak mendukung hapus (extract only)".into())),
+        ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => Err(
+            Error::Other("format stream tunggal hanya berisi satu berkas — hapus file-nya saja".into()),
+        ),
+        _ => Err(Error::UnsupportedFormat),
+    }
+}
+
+/// Bangun predikat "apakah entri ini harus dihapus" dari daftar target.
+/// Cocok bila nama sama persis, atau berada di bawah target yang merupakan
+/// direktori (`target/...`). Trailing slash diabaikan.
+fn make_remover(names: &[&str]) -> impl Fn(&str) -> bool {
+    let targets: Vec<String> = names
+        .iter()
+        .map(|t| t.trim_end_matches('/').to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    move |name: &str| {
+        let n = name.trim_end_matches('/');
+        targets
+            .iter()
+            .any(|t| n == t || n.starts_with(&format!("{t}/")))
+    }
+}
+
+/// Path file sementara di direktori yang sama dengan `archive` (agar `rename`
+/// tetap dalam satu filesystem). Disisipi PID agar tidak bentrok antar-proses.
+fn temp_sibling(archive: &Path) -> PathBuf {
+    let parent = archive.parent().unwrap_or_else(|| Path::new("."));
+    let name = archive
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "archive".to_string());
+    parent.join(format!(".{name}.zippy-{}.tmp", std::process::id()))
+}
+
+/// Selesaikan operasi tulis-ulang: sukses → `rename` menimpa asal & pancarkan
+/// `Finished`; gagal → buang file sementara dan teruskan error.
+fn finalize_replace(
+    res: Result<()>,
+    tmp: &Path,
+    archive: &Path,
+    start: Instant,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    match res {
+        Ok(()) => {
+            fs::rename(tmp, archive)?;
+            progress.emit(ProgressEvent::Finished {
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            });
+            Ok(())
+        }
+        Err(e) => {
+            let _ = fs::remove_file(tmp);
+            Err(e)
+        }
+    }
+}
+
+fn delete_zip(
+    archive: &Path,
+    names: &[&str],
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    let remove = make_remover(names);
+    let tmp = temp_sibling(archive);
+
+    let res = (|| -> Result<()> {
+        let f = File::open(archive)?;
+        let mut src = zip::ZipArchive::new(BufReader::new(f)).map_err(zip_err)?;
+        let total = src.len();
+
+        // Kumpulkan bit "encrypted" tiap entri lebih dulu.
+        let mut enc_flags = Vec::with_capacity(total);
+        for i in 0..total {
+            enc_flags.push(src.by_index_raw(i).map_err(zip_err)?.encrypted());
+        }
+        let any_encrypted = enc_flags.iter().any(|&e| e);
+
+        let out = File::create(&tmp)?;
+        let mut zw = zip::ZipWriter::new(BufWriter::new(out));
+        progress.emit(ProgressEvent::Started { total_files: total });
+
+        if !any_encrypted {
+            // Jalur cepat: salin byte terkompresi apa adanya (lossless: metode
+            // kompresi & CRC dipertahankan), tanpa dekompresi/password.
+            for i in 0..total {
+                cancel.check()?;
+                let entry = src.by_index_raw(i).map_err(zip_err)?;
+                let name = entry.name().to_string();
+                if remove(&name) {
+                    continue;
+                }
+                zw.raw_copy_file(entry).map_err(zip_err)?;
+                progress.emit(ProgressEvent::FileProcessed { name, index: i });
+            }
+        } else {
+            // Ada entri terenkripsi: `raw_copy_file` membangun ulang header dari
+            // metadata dan TIDAK mempertahankan field-ekstra AES, jadi salin
+            // mentah akan merusak entri. Maka dekripsi tiap entri lalu enkripsi
+            // ulang dengan AES-256 (butuh password).
+            let pw = password.ok_or(Error::Password)?;
+            for i in 0..total {
+                cancel.check()?;
+                let mut e = if enc_flags[i] {
+                    src.by_index_decrypt(i, pw.as_bytes()).map_err(zip_err)?
+                } else {
+                    src.by_index(i).map_err(zip_err)?
+                };
+                let name = e.name().to_string();
+                if remove(&name) {
+                    continue;
+                }
+                if e.is_dir() {
+                    zw.add_directory(name, zip::write::SimpleFileOptions::default())
+                        .map_err(zip_err)?;
+                } else {
+                    let opts: zip::write::FileOptions<'_, ()> =
+                        zip::write::FileOptions::default()
+                            .compression_method(zip::CompressionMethod::Deflated)
+                            .with_aes_encryption(zip::AesMode::Aes256, pw);
+                    zw.start_file(name.clone(), opts).map_err(zip_err)?;
+                    extract::copy_guarded(
+                        &mut e,
+                        &mut zw,
+                        &mut DecompressionGuard::new(u64::MAX),
+                        cancel,
+                    )?;
+                    progress.emit(ProgressEvent::FileProcessed { name, index: i });
+                }
+            }
+        }
+        zw.finish().map_err(zip_err)?;
+        Ok(())
+    })();
+
+    finalize_replace(res, &tmp, archive, start, progress)
+}
+
+fn delete_tar(
+    archive: &Path,
+    kind: ArchiveKind,
+    names: &[&str],
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    let remove = make_remover(names);
+    let tmp = temp_sibling(archive);
+
+    let res = (|| -> Result<()> {
+        let reader = open_tar_reader(archive, kind)?;
+        let mut src = tar::Archive::new(reader);
+        let w = BufWriter::new(File::create(&tmp)?);
+        progress.emit(ProgressEvent::Started { total_files: 0 });
+
+        // Rekompresi pakai level default; struktur tar di-stream ulang minus
+        // entri yang dihapus.
+        match kind {
+            ArchiveKind::Tar => {
+                let mut b = tar::Builder::new(w);
+                copy_tar_except(&mut src, &mut b, &remove, cancel, progress)?;
+                b.finish()?;
+            }
+            ArchiveKind::TarGz => {
+                let enc = GzEncoder::new(w, flate2::Compression::default());
+                let mut b = tar::Builder::new(enc);
+                copy_tar_except(&mut src, &mut b, &remove, cancel, progress)?;
+                b.into_inner()?.finish()?;
+            }
+            ArchiveKind::TarBz2 => {
+                let enc = bzip2::write::BzEncoder::new(w, bzip2::Compression::default());
+                let mut b = tar::Builder::new(enc);
+                copy_tar_except(&mut src, &mut b, &remove, cancel, progress)?;
+                b.into_inner()?.finish()?;
+            }
+            ArchiveKind::TarXz => {
+                let enc = xz2::write::XzEncoder::new(w, 6);
+                let mut b = tar::Builder::new(enc);
+                copy_tar_except(&mut src, &mut b, &remove, cancel, progress)?;
+                b.into_inner()?.finish()?;
+            }
+            ArchiveKind::TarZst => {
+                let enc = zstd::stream::write::Encoder::new(w, 3)?;
+                let mut b = tar::Builder::new(enc);
+                copy_tar_except(&mut src, &mut b, &remove, cancel, progress)?;
+                b.into_inner()?.finish()?;
+            }
+            _ => return Err(Error::UnsupportedFormat),
+        }
+        Ok(())
+    })();
+
+    finalize_replace(res, &tmp, archive, start, progress)
+}
+
+/// Salin semua entri tar dari `src` ke `builder` kecuali yang lolos `remove`.
+fn copy_tar_except<R: Read, W: Write>(
+    src: &mut tar::Archive<R>,
+    builder: &mut tar::Builder<W>,
+    remove: &dyn Fn(&str) -> bool,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let mut index = 0;
+    for entry in src.entries()? {
+        cancel.check()?;
+        let mut entry = entry?;
+        let path = entry.path()?.to_string_lossy().into_owned();
+        if remove(&path) {
+            continue;
+        }
+        // `append_data` menangani nama panjang (ekstensi GNU/pax) & menghitung
+        // ulang checksum header.
+        let mut header = entry.header().clone();
+        builder.append_data(&mut header, &path, &mut entry)?;
+        progress.emit(ProgressEvent::FileProcessed { name: path, index });
+        index += 1;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Info enkripsi
+// ---------------------------------------------------------------------------
+
+/// Apakah `archive` memakai enkripsi ZIP legasi (ZipCrypto) yang lemah pada
+/// setidaknya satu entri. AES-256 dianggap kuat → `false`. Untuk format selain
+/// ZIP selalu `false`. Dipakai UI untuk memperingatkan saat membuka archive.
+pub fn has_weak_encryption(archive: &Path) -> Result<bool> {
+    if detect_kind(archive)? != ArchiveKind::Zip {
+        return Ok(false);
+    }
+    let f = File::open(archive)?;
+    let mut ar = zip::ZipArchive::new(BufReader::new(f)).map_err(zip_err)?;
+    let n = ar.len();
+
+    // Kumpulkan dulu bit "encrypted" tiap entri (pinjam mutabel berurutan),
+    // baru periksa apakah enkripsinya AES — `get_aes_verification_key_and_salt`
+    // mengembalikan `None` untuk entri non-AES (yakni ZipCrypto legasi).
+    let mut encrypted = Vec::with_capacity(n);
+    for i in 0..n {
+        encrypted.push(ar.by_index_raw(i).map_err(zip_err)?.encrypted());
+    }
+    for (i, &enc) in encrypted.iter().enumerate() {
+        if enc && ar.get_aes_verification_key_and_salt(i).map_err(zip_err)?.is_none() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +912,7 @@ fn compress_zip(
     inputs: &[&Path],
     dest: &Path,
     password: Option<&str>,
+    level: Level,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -549,9 +921,18 @@ fn compress_zip(
     let mut zw = zip::ZipWriter::new(BufWriter::new(f));
 
     // Tipe borrowed (bukan SimpleFileOptions yang 'static) agar password AES
-    // boleh meminjam dari argumen fungsi.
+    // boleh meminjam dari argumen fungsi. `Store` → metode Stored (tanpa
+    // kompresi); selainnya Deflated dengan level eksplisit.
+    let method = if level == Level::Store {
+        zip::CompressionMethod::Stored
+    } else {
+        zip::CompressionMethod::Deflated
+    };
     let mut opts: zip::write::FileOptions<'_, ()> =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip::write::FileOptions::default().compression_method(method);
+    if method != zip::CompressionMethod::Stored {
+        opts = opts.compression_level(level.zip_deflate());
+    }
     if let Some(pw) = password {
         opts = opts.with_aes_encryption(zip::AesMode::Aes256, pw);
     }
@@ -641,6 +1022,7 @@ fn compress_tar(
     inputs: &[&Path],
     dest: &Path,
     kind: ArchiveKind,
+    level: Level,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -657,25 +1039,25 @@ fn compress_tar(
             b.finish()?;
         }
         ArchiveKind::TarGz => {
-            let enc = GzEncoder::new(w, flate2::Compression::default());
+            let enc = GzEncoder::new(w, level.flate2());
             let mut b = tar::Builder::new(enc);
             write_tar_entries(&mut b, inputs, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarBz2 => {
-            let enc = bzip2::write::BzEncoder::new(w, bzip2::Compression::default());
+            let enc = bzip2::write::BzEncoder::new(w, level.bzip2());
             let mut b = tar::Builder::new(enc);
             write_tar_entries(&mut b, inputs, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarXz => {
-            let enc = xz2::write::XzEncoder::new(w, 6);
+            let enc = xz2::write::XzEncoder::new(w, level.xz());
             let mut b = tar::Builder::new(enc);
             write_tar_entries(&mut b, inputs, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarZst => {
-            let enc = zstd::stream::write::Encoder::new(w, 3)?;
+            let enc = zstd::stream::write::Encoder::new(w, level.zstd())?;
             let mut b = tar::Builder::new(enc);
             write_tar_entries(&mut b, inputs, cancel, progress)?;
             b.into_inner()?.finish()?;
@@ -803,6 +1185,7 @@ fn compress_single(
     inputs: &[&Path],
     dest: &Path,
     kind: ArchiveKind,
+    level: Level,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -817,10 +1200,10 @@ fn compress_single(
     let mut input = File::open(inputs[0])?;
     let w = BufWriter::new(File::create(dest)?);
     let mut enc: Box<dyn Write> = match kind {
-        ArchiveKind::Gz => Box::new(GzEncoder::new(w, flate2::Compression::default())),
-        ArchiveKind::Bz2 => Box::new(bzip2::write::BzEncoder::new(w, bzip2::Compression::default())),
-        ArchiveKind::Xz => Box::new(xz2::write::XzEncoder::new(w, 6)),
-        ArchiveKind::Zst => Box::new(zstd::stream::write::Encoder::new(w, 3)?.auto_finish()),
+        ArchiveKind::Gz => Box::new(GzEncoder::new(w, level.flate2())),
+        ArchiveKind::Bz2 => Box::new(bzip2::write::BzEncoder::new(w, level.bzip2())),
+        ArchiveKind::Xz => Box::new(xz2::write::XzEncoder::new(w, level.xz())),
+        ArchiveKind::Zst => Box::new(zstd::stream::write::Encoder::new(w, level.zstd())?.auto_finish()),
         _ => return Err(Error::UnsupportedFormat),
     };
     // Loop manual (bukan io::copy) agar Cancel bisa menghentikan file besar di

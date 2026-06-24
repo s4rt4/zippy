@@ -93,6 +93,7 @@ pub fn sevenzip_compress(
     inputs: &[&Path],
     dest: &Path,
     password: Option<&str>,
+    level: crate::archive::Level,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -102,7 +103,7 @@ pub fn sevenzip_compress(
     });
 
     let mut cmd = hardened_command("7z");
-    cmd.arg("a").arg("-y");
+    cmd.arg("a").arg("-y").arg(format!("-mx={}", level.sevenzip_mx()));
     // 7z hanya mengenkripsi bila flag `-p` ADA (tanpa nilai) — passwordnya
     // sendiri tetap dikirim via stdin (bukan argv, agar tidak bocor lewat
     // /proc/<pid>/cmdline). Tanpa `-p`, password di stdin diabaikan diam-diam.
@@ -133,6 +134,35 @@ pub fn sevenzip_test(
     let mut cmd = hardened_command("7z");
     cmd.arg("t").arg("-y").arg("--").arg(archive);
     run_capture(&mut cmd, password, Some(cancel))?;
+    progress.emit(ProgressEvent::Finished {
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    });
+    Ok(())
+}
+
+/// Hapus entri `names` dari archive 7z via `7z d` (edit in-place). `-r` agar
+/// nama direktori ikut menghapus isinya.
+pub fn sevenzip_delete(
+    archive: &Path,
+    names: &[&str],
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    progress.emit(ProgressEvent::Started { total_files: 0 });
+
+    let mut cmd = hardened_command("7z");
+    cmd.arg("d").arg("-y").arg("-r");
+    if password.is_some() {
+        cmd.arg("-p");
+    }
+    cmd.arg("--").arg(archive);
+    for name in names {
+        cmd.arg(name.trim_end_matches('/'));
+    }
+    run_capture(&mut cmd, password, Some(cancel))?;
+
     progress.emit(ProgressEvent::Finished {
         elapsed_ms: start.elapsed().as_millis() as u64,
     });

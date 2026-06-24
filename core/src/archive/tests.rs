@@ -259,6 +259,171 @@ fn rejects_zip_slip_on_extract() {
     assert!(matches!(err, Error::UnsafePath(_)), "harusnya UnsafePath, dapat {err:?}");
 }
 
+// ---------------------------------------------------------------------------
+// Delete (hapus entri in-place)
+// ---------------------------------------------------------------------------
+
+/// Hapus satu berkas dari zip; sisanya tetap utuh & bisa di-extract.
+#[test]
+fn delete_zip_removes_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+
+    let archive = tmp.path().join("out.zip");
+    compress(&src_refs, &archive, None, &CancelToken::new(), &NullSink).unwrap();
+
+    delete(&archive, &["a.txt"], None, &CancelToken::new(), &NullSink).unwrap();
+
+    let names: Vec<String> = list(&archive, None).unwrap().into_iter().map(|e| e.name).collect();
+    assert!(!names.iter().any(|n| n == "a.txt"), "a.txt harusnya terhapus: {names:?}");
+    assert!(names.iter().any(|n| n.contains("b.txt")), "b.txt harus tetap ada: {names:?}");
+
+    // Sisa archive masih valid & ter-extract.
+    let out = tmp.path().join("out");
+    extract_all(&archive, &out, None, &CancelToken::new(), &NullSink).unwrap();
+    assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b"isi kedua\n");
+    assert!(!out.join("a.txt").exists());
+}
+
+/// Menghapus nama direktori ikut menghapus seluruh isinya (prefiks).
+#[test]
+fn delete_zip_removes_directory_recursively() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+
+    let archive = tmp.path().join("out.zip");
+    compress(&src_refs, &archive, None, &CancelToken::new(), &NullSink).unwrap();
+
+    delete(&archive, &["sub"], None, &CancelToken::new(), &NullSink).unwrap();
+
+    let names: Vec<String> = list(&archive, None).unwrap().into_iter().map(|e| e.name).collect();
+    assert!(!names.iter().any(|n| n.contains("b.txt")), "isi sub/ harusnya terhapus: {names:?}");
+    assert!(names.iter().any(|n| n == "a.txt"), "a.txt harus tetap ada: {names:?}");
+}
+
+/// Hapus dari tar.gz: tulis-ulang stream tanpa entri terpilih.
+#[test]
+fn delete_targz_removes_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+
+    let archive = tmp.path().join("out.tar.gz");
+    compress(&src_refs, &archive, None, &CancelToken::new(), &NullSink).unwrap();
+
+    delete(&archive, &["a.txt"], None, &CancelToken::new(), &NullSink).unwrap();
+    assert_eq!(detect_kind(&archive).unwrap(), ArchiveKind::TarGz);
+
+    let out = tmp.path().join("out");
+    extract_all(&archive, &out, None, &CancelToken::new(), &NullSink).unwrap();
+    assert!(!out.join("a.txt").exists(), "a.txt harusnya terhapus");
+    assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b"isi kedua\n");
+}
+
+/// Hapus dari zip AES-256: entri tersisa harus tetap bisa didekripsi dengan
+/// password yang sama (jalur dekripsi→enkripsi-ulang, bukan salin mentah).
+#[test]
+fn delete_aes_zip_keeps_remaining_decryptable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+
+    let archive = tmp.path().join("enc.zip");
+    compress(&src_refs, &archive, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+
+    // Tanpa password → harus minta password (Error::Password), bukan merusak.
+    let err = delete(&archive, &["a.txt"], None, &CancelToken::new(), &NullSink).unwrap_err();
+    assert!(matches!(err, Error::Password), "harusnya Error::Password, dapat {err:?}");
+
+    // Dengan password → sukses; sisa tetap terenkripsi & ter-extract benar.
+    delete(&archive, &["a.txt"], Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+
+    // Masih terenkripsi (extract tanpa password gagal).
+    let nopw = tmp.path().join("nopw");
+    assert!(extract_all(&archive, &nopw, None, &CancelToken::new(), &NullSink).is_err());
+
+    // Password benar → b.txt utuh, a.txt hilang.
+    let out = tmp.path().join("out");
+    extract_all(&archive, &out, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+    assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b"isi kedua\n");
+    assert!(!out.join("a.txt").exists());
+}
+
+/// RAR & stream tunggal tidak mendukung hapus → error (bukan panik).
+#[test]
+fn delete_single_stream_unsupported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("note.txt");
+    fs::write(&input, b"x\n").unwrap();
+    let archive = tmp.path().join("note.txt.gz");
+    compress(&[input.as_path()], &archive, None, &CancelToken::new(), &NullSink).unwrap();
+
+    let err = delete(&archive, &["note.txt"], None, &CancelToken::new(), &NullSink).unwrap_err();
+    assert!(matches!(err, Error::Other(_)), "harusnya Error::Other, dapat {err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Compression level
+// ---------------------------------------------------------------------------
+
+/// `Level::Store` menghasilkan zip tanpa kompresi (compressed ≈ ukuran asli),
+/// `Level::Best` lebih kecil — dan keduanya tetap round-trip benar.
+#[test]
+fn zip_levels_affect_size_and_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("big.txt");
+    // Data sangat kompresibel (berulang) agar selisih level jelas.
+    fs::write(&input, "ABCD".repeat(50_000)).unwrap();
+    let refs = [input.as_path()];
+
+    let stored = tmp.path().join("stored.zip");
+    let best = tmp.path().join("best.zip");
+    compress_with_level(&refs, &stored, None, Level::Store, &CancelToken::new(), &NullSink).unwrap();
+    compress_with_level(&refs, &best, None, Level::Best, &CancelToken::new(), &NullSink).unwrap();
+
+    let stored_sz = fs::metadata(&stored).unwrap().len();
+    let best_sz = fs::metadata(&best).unwrap().len();
+    assert!(best_sz < stored_sz, "Best ({best_sz}) harus < Store ({stored_sz})");
+
+    // Round-trip kedua level.
+    for arc in [&stored, &best] {
+        let out = tmp.path().join(format!("out-{}", arc.file_stem().unwrap().to_string_lossy()));
+        extract_all(arc, &out, None, &CancelToken::new(), &NullSink).unwrap();
+        assert_eq!(fs::read(out.join("big.txt")).unwrap(), "ABCD".repeat(50_000).into_bytes());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deteksi enkripsi lemah
+// ---------------------------------------------------------------------------
+
+/// AES-256 → bukan enkripsi lemah; archive tanpa password juga `false`.
+#[test]
+fn weak_encryption_false_for_aes_and_plain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+
+    let plain = tmp.path().join("plain.zip");
+    compress(&src_refs, &plain, None, &CancelToken::new(), &NullSink).unwrap();
+    assert!(!has_weak_encryption(&plain).unwrap());
+
+    let aes = tmp.path().join("aes.zip");
+    compress(&src_refs, &aes, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+    assert!(!has_weak_encryption(&aes).unwrap(), "AES-256 bukan enkripsi lemah");
+}
+
+// (Deteksi ZipCrypto legasi diuji di tests/interop.rs lewat tool `zip` sistem;
+// API enkripsi-deprecated crate `zip` bersifat pub(crate) sehingga tak bisa
+// dibuat dari unit test ini.)
+
 #[test]
 fn sevenzip_roundtrip_if_available() {
     if !crate::subprocess::sevenzip_available() {

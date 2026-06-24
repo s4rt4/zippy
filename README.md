@@ -17,8 +17,8 @@ berfungsi & teruji**. Frontend GTK4 masih window kosong (v0.2).
 | RAR | ✓ | ✓ | — | subprocess `unrar` (extract only) |
 
 Semua jalur extract melewati guard **Zip Slip** + **zip bomb**. Deteksi format
-berbasis **magic bytes** (berlapis untuk `.tar.*`). 22 unit/round-trip test hijau
-(`cargo test -p zippy-core`).
+berbasis **magic bytes** (berlapis untuk `.tar.*`). 48 test hijau — 36 unit/
+round-trip + 9 interop + 3 robustness (`cargo test -p zippy-core`).
 
 ## Arsitektur
 

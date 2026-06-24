@@ -16,7 +16,7 @@ pub mod progress;
 pub mod safety;
 pub mod subprocess;
 
-pub use archive::{ArchiveKind, Entry};
+pub use archive::{ArchiveKind, Entry, Level};
 pub use cancel::CancelToken;
 pub use error::{Error, Result};
 pub use formats::Format;
