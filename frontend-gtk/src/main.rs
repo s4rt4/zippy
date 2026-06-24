@@ -5,6 +5,7 @@
 //! baseline RSS/startup; dispatch verb CLI menyusul di v0.4 (Sprint 8-9).
 
 mod cli;
+mod config;
 mod file_list;
 mod progress;
 mod window;

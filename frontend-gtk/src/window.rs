@@ -20,8 +20,15 @@ use gtk4::glib;
 use libadwaita as adw;
 use zippy_core::{ArchiveKind, CancelToken, Entry, Error, Level, ProgressEvent, ProgressSink};
 
+use crate::config::{self, Config};
 use crate::file_list::{self, FileListView, Row};
 use crate::progress::ChannelSink;
+
+/// Nama ikon aplikasi (themed). Lihat [`setup_icon_theme`].
+const APP_ICON: &str = "io.github.s4rt4.Zippy";
+/// Ikon di-embed agar logo tetap muncul walau app belum di-install.
+const APP_ICON_SVG: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/icons/io.github.s4rt4.Zippy.svg"));
 
 /// Handle widget yang dibagi antar-callback selama window hidup.
 struct Ui {
@@ -46,9 +53,18 @@ struct Ui {
     entries: RefCell<Vec<Entry>>,
     /// Direktori yang sedang ditampilkan (komponen path; kosong = root).
     cwd: RefCell<Vec<String>>,
+    /// Preferensi persisten (level default, tema, konfirmasi hapus).
+    config: RefCell<Config>,
+    /// Submenu Favorites — dibangun ulang saat daftar favorit berubah.
+    favorites_menu: gio::Menu,
 }
 
 pub fn build_ui(app: &adw::Application) {
+    // Daftarkan ikon embedded + terapkan tema sebelum membangun widget.
+    setup_icon_theme();
+    let cfg = Config::load();
+    apply_scheme(cfg.scheme);
+
     let list = file_list::build();
 
     let address = gtk::Label::builder()
@@ -135,6 +151,8 @@ pub fn build_ui(app: &adw::Application) {
         cancel: RefCell::new(None),
         entries: RefCell::new(Vec::new()),
         cwd: RefCell::new(Vec::new()),
+        config: RefCell::new(cfg),
+        favorites_menu: gio::Menu::new(),
     });
 
     // --- Menu bar + aksi ---
@@ -273,8 +291,23 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     add_action(&group, "test", ui, test_dialog);
     add_action(&group, "delete", ui, delete_selected);
     add_action(&group, "find", ui, toggle_search);
-    add_action(&group, "wizard", ui, |ui| show_toast(ui, "Wizard belum didukung"));
+    add_action(&group, "wizard", ui, show_wizard);
+    add_action(&group, "options", ui, show_preferences);
     add_action(&group, "about", ui, show_about);
+    // Favorit: tambah/hapus arsip saat ini, kelola, dan buka (berparameter).
+    add_action(&group, "fav_add", ui, fav_add_current);
+    add_action(&group, "fav_remove", ui, fav_remove_current);
+    add_action(&group, "fav_manage", ui, show_favorites_manager);
+    let fav_open = gio::SimpleAction::new("fav_open", Some(glib::VariantTy::STRING));
+    fav_open.connect_activate({
+        let ui = ui.clone();
+        move |_, param| {
+            if let Some(p) = param.and_then(|v| v.get::<String>()) {
+                load_archive(&ui, PathBuf::from(p));
+            }
+        }
+    });
+    group.add_action(&fav_open);
     // Aksi context menu (beroperasi pada seleksi saat diaktifkan).
     add_action(&group, "view", ui, view_selected);
     add_action(&group, "up", ui, |ui| {
@@ -307,14 +340,141 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     tools.append(Some("Cari…"), Some("win.find"));
     menu.append_submenu(Some("Tools"), &tools);
 
-    menu.append_submenu(Some("Favorites"), &gio::Menu::new());
-    menu.append_submenu(Some("Options"), &gio::Menu::new());
+    menu.append_submenu(Some("Favorites"), &ui.favorites_menu);
+    refresh_favorites_menu(ui);
+
+    let options = gio::Menu::new();
+    options.append(Some("Preferensi…"), Some("win.options"));
+    menu.append_submenu(Some("Options"), &options);
 
     let help = gio::Menu::new();
     help.append(Some("Tentang Zippy"), Some("win.about"));
     menu.append_submenu(Some("Help"), &help);
 
     gtk::PopoverMenuBar::from_model(Some(&menu))
+}
+
+/// Bangun ulang isi submenu Favorites dari daftar tersimpan.
+fn refresh_favorites_menu(ui: &Rc<Ui>) {
+    let m = &ui.favorites_menu;
+    m.remove_all();
+
+    let actions = gio::Menu::new();
+    actions.append(Some("Tambah arsip saat ini"), Some("win.fav_add"));
+    actions.append(Some("Hapus arsip saat ini"), Some("win.fav_remove"));
+    actions.append(Some("Kelola Favorit…"), Some("win.fav_manage"));
+    m.append_section(None, &actions);
+
+    let favs = config::favorites_load();
+    if favs.is_empty() {
+        return;
+    }
+    let list = gio::Menu::new();
+    for p in &favs {
+        let label = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.display().to_string());
+        let item = gio::MenuItem::new(Some(&label), None);
+        let target = p.to_string_lossy().into_owned().to_variant();
+        item.set_action_and_target_value(Some("win.fav_open"), Some(&target));
+        list.append_item(&item);
+    }
+    m.append_section(Some("Tersimpan"), &list);
+}
+
+fn fav_add_current(ui: &Rc<Ui>) {
+    let Some(path) = ui.current.borrow().clone() else {
+        show_toast(ui, "Buka arsip dulu sebelum menambah ke Favorit");
+        return;
+    };
+    config::favorites_add(&path);
+    refresh_favorites_menu(ui);
+    show_toast(ui, "Ditambahkan ke Favorit");
+}
+
+fn fav_remove_current(ui: &Rc<Ui>) {
+    let Some(path) = ui.current.borrow().clone() else {
+        return;
+    };
+    if !config::favorites_contains(&path) {
+        show_toast(ui, "Arsip ini tidak ada di Favorit");
+        return;
+    }
+    config::favorites_remove(&path);
+    refresh_favorites_menu(ui);
+    show_toast(ui, "Dihapus dari Favorit");
+}
+
+/// Dialog kelola favorit: daftar dengan tombol buka & hapus per baris.
+fn show_favorites_manager(ui: &Rc<Ui>) {
+    let win = adw::PreferencesWindow::builder()
+        .transient_for(&ui.window)
+        .modal(true)
+        .title("Kelola Favorit")
+        .search_enabled(false)
+        .build();
+    win.set_default_size(460, 420);
+
+    let page = adw::PreferencesPage::new();
+    let group = adw::PreferencesGroup::builder()
+        .title("Arsip Favorit")
+        .description("Klik baris untuk membuka, atau tombol hapus untuk membuang.")
+        .build();
+
+    let favs = config::favorites_load();
+    if favs.is_empty() {
+        let empty = adw::ActionRow::builder()
+            .title("Belum ada favorit")
+            .subtitle("Tambahkan lewat menu Favorites → Tambah arsip saat ini")
+            .build();
+        group.add(&empty);
+    } else {
+        for p in favs {
+            let title = p
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string());
+            let row = adw::ActionRow::builder()
+                .title(title)
+                .subtitle(p.display().to_string())
+                .activatable(true)
+                .build();
+            row.add_prefix(&gtk::Image::from_icon_name("application-x-archive"));
+
+            let remove = gtk::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .tooltip_text("Hapus dari Favorit")
+                .valign(gtk::Align::Center)
+                .build();
+            remove.add_css_class("flat");
+            remove.connect_clicked({
+                let ui = ui.clone();
+                let p = p.clone();
+                let win = win.clone();
+                move |_| {
+                    config::favorites_remove(&p);
+                    refresh_favorites_menu(&ui);
+                    win.close();
+                    show_favorites_manager(&ui); // tampilkan ulang dengan daftar baru
+                }
+            });
+            row.add_suffix(&remove);
+            row.connect_activated({
+                let ui = ui.clone();
+                let p = p.clone();
+                let win = win.clone();
+                move |_| {
+                    win.close();
+                    load_archive(&ui, p.clone());
+                }
+            });
+            group.add(&row);
+        }
+    }
+    page.add(&group);
+    win.add(&page);
+    win.present();
 }
 
 fn add_action<F: Fn(&Rc<Ui>) + 'static>(
@@ -854,6 +1014,15 @@ fn level_from_index(i: u32) -> Level {
     }
 }
 
+fn index_from_level(l: Level) -> u32 {
+    match l {
+        Level::Store => 0,
+        Level::Fastest => 1,
+        Level::Normal => 2,
+        Level::Best => 3,
+    }
+}
+
 /// Dialog opsi compress: pilih tingkat kompresi dan (untuk zip/7z) password
 /// enkripsi AES-256. Untuk `.tar` polos (tanpa kompresi & tanpa enkripsi)
 /// langsung jalan tanpa dialog.
@@ -871,7 +1040,7 @@ fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
     let level_dropdown = gtk::DropDown::from_strings(&LEVEL_LABELS);
-    level_dropdown.set_selected(2); // Normal
+    level_dropdown.set_selected(index_from_level(ui.config.borrow().level));
     if supports_level {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.append(&gtk::Label::new(Some("Tingkat kompresi:")));
@@ -1562,6 +1731,12 @@ fn delete_selected(ui: &Rc<Ui>) {
         return;
     }
 
+    // Hormati preferensi: lewati konfirmasi bila dimatikan di Options.
+    if !ui.config.borrow().confirm_delete {
+        run_delete(ui, archive, names, None);
+        return;
+    }
+
     let body = if names.len() == 1 {
         format!("Hapus \"{}\" dari archive? Tindakan ini tidak bisa dibatalkan.", names[0])
     } else {
@@ -1663,16 +1838,258 @@ fn run_delete(ui: &Rc<Ui>, archive: PathBuf, names: Vec<String>, password: Optio
 // ---------------------------------------------------------------------------
 
 fn show_about(ui: &Rc<Ui>) {
-    let dialog = adw::MessageDialog::new(
-        Some(&ui.window),
-        Some("Zippy"),
-        Some(&format!(
-            "Archive manager untuk Linux — versi {}\n\nGTK4 + libadwaita, core Rust.",
-            zippy_core::VERSION
-        )),
-    );
-    dialog.add_response("ok", "Tutup");
-    dialog.present();
+    let about = adw::AboutWindow::builder()
+        .transient_for(&ui.window)
+        .modal(true)
+        .application_name("Zippy")
+        .application_icon(APP_ICON)
+        .version(zippy_core::VERSION)
+        .developer_name("s4rt4")
+        .developers(vec!["s4rt4 <https://github.com/s4rt4>".to_string()])
+        .comments(
+            "Archive manager ringan untuk Linux — seringan WinRAR, dengan context menu \
+             klik-kanan yang kaya & kondisional.\n\n\
+             GTK4 + libadwaita di atas core Rust murni (zip/tar native, 7z/rar via subprocess).",
+        )
+        .website("https://github.com/s4rt4/zippy")
+        .issue_url("https://github.com/s4rt4/zippy/issues")
+        .license_type(gtk::License::MitX11)
+        .copyright("© 2026 s4rt4")
+        .build();
+    about.add_link("Repositori GitHub", "https://github.com/s4rt4/zippy");
+    about.add_link("Laporkan Masalah", "https://github.com/s4rt4/zippy/issues");
+    about.present();
+}
+
+/// Daftarkan ikon aplikasi yang di-embed ke icon theme + tulis salinan ke
+/// cache, agar logo & ikon judul muncul walau app belum di-install.
+fn setup_icon_theme() {
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+    let base = cache_dir().join("zippy-icons");
+    let dir = base.join("hicolor/scalable/apps");
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let f = dir.join("io.github.s4rt4.Zippy.svg");
+        let _ = std::fs::write(&f, APP_ICON_SVG);
+        gtk::IconTheme::for_display(&display).add_search_path(&base);
+    }
+}
+
+fn cache_dir() -> PathBuf {
+    if let Some(x) = std::env::var_os("XDG_CACHE_HOME") {
+        if !x.is_empty() {
+            return PathBuf::from(x);
+        }
+    }
+    std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".cache"))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Terapkan skema warna libadwaita.
+fn apply_scheme(s: config::Scheme) {
+    let scheme = match s {
+        config::Scheme::Default => adw::ColorScheme::Default,
+        config::Scheme::Light => adw::ColorScheme::ForceLight,
+        config::Scheme::Dark => adw::ColorScheme::ForceDark,
+    };
+    adw::StyleManager::default().set_color_scheme(scheme);
+}
+
+// ---------------------------------------------------------------------------
+// Preferensi (Options)
+// ---------------------------------------------------------------------------
+
+fn show_preferences(ui: &Rc<Ui>) {
+    let win = adw::PreferencesWindow::builder()
+        .transient_for(&ui.window)
+        .modal(true)
+        .title("Preferensi")
+        .search_enabled(false)
+        .build();
+    win.set_default_size(480, 360);
+
+    let page = adw::PreferencesPage::new();
+    let group = adw::PreferencesGroup::builder().title("Umum").build();
+
+    // Tema.
+    let scheme_row = adw::ComboRow::builder().title("Tema").build();
+    let scheme_model = gtk::StringList::new(&["Ikuti sistem", "Terang", "Gelap"]);
+    scheme_row.set_model(Some(&scheme_model));
+    scheme_row.set_selected(match ui.config.borrow().scheme {
+        config::Scheme::Default => 0,
+        config::Scheme::Light => 1,
+        config::Scheme::Dark => 2,
+    });
+    scheme_row.connect_selected_notify({
+        let ui = ui.clone();
+        move |r| {
+            let s = match r.selected() {
+                1 => config::Scheme::Light,
+                2 => config::Scheme::Dark,
+                _ => config::Scheme::Default,
+            };
+            apply_scheme(s);
+            let mut c = ui.config.borrow_mut();
+            c.scheme = s;
+            c.save();
+        }
+    });
+    group.add(&scheme_row);
+
+    // Tingkat kompresi default.
+    let level_row = adw::ComboRow::builder()
+        .title("Tingkat kompresi default")
+        .subtitle("Dipakai sebagai pilihan awal di dialog Add")
+        .build();
+    let level_model = gtk::StringList::new(&LEVEL_LABELS);
+    level_row.set_model(Some(&level_model));
+    level_row.set_selected(index_from_level(ui.config.borrow().level));
+    level_row.connect_selected_notify({
+        let ui = ui.clone();
+        move |r| {
+            let mut c = ui.config.borrow_mut();
+            c.level = level_from_index(r.selected());
+            c.save();
+        }
+    });
+    group.add(&level_row);
+
+    // Konfirmasi hapus.
+    let del_row = adw::SwitchRow::builder()
+        .title("Konfirmasi sebelum hapus")
+        .subtitle("Tampilkan dialog konfirmasi saat menghapus entri arsip")
+        .build();
+    del_row.set_active(ui.config.borrow().confirm_delete);
+    del_row.connect_active_notify({
+        let ui = ui.clone();
+        move |r| {
+            let mut c = ui.config.borrow_mut();
+            c.confirm_delete = r.is_active();
+            c.save();
+        }
+    });
+    group.add(&del_row);
+
+    page.add(&group);
+    win.add(&page);
+    win.present();
+}
+
+// ---------------------------------------------------------------------------
+// Wizard
+// ---------------------------------------------------------------------------
+
+/// Wizard "apa yang ingin Anda lakukan?" — pengganti titik masuk WinRAR,
+/// merutekan ke alur yang sudah ada (Planning Doc §5.4).
+fn show_wizard(ui: &Rc<Ui>) {
+    let win = adw::Window::builder()
+        .transient_for(&ui.window)
+        .modal(true)
+        .title("Wizard Zippy")
+        .default_width(440)
+        .build();
+
+    let page = adw::PreferencesPage::new();
+    let group = adw::PreferencesGroup::builder()
+        .title("Apa yang ingin Anda lakukan?")
+        .build();
+
+    let make_row = |title: &str, subtitle: &str, icon: &str| {
+        let row = adw::ActionRow::builder()
+            .title(title)
+            .subtitle(subtitle)
+            .activatable(true)
+            .build();
+        row.add_prefix(&gtk::Image::from_icon_name(icon));
+        row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+        row
+    };
+
+    let open = make_row("Buka arsip", "Tampilkan isi arsip yang sudah ada", "document-open");
+    open.connect_activated({
+        let ui = ui.clone();
+        let win = win.clone();
+        move |_| {
+            win.close();
+            open_dialog(&ui);
+        }
+    });
+    let create = make_row("Buat arsip baru", "Pilih berkas/folder lalu kompres", "list-add");
+    create.connect_activated({
+        let ui = ui.clone();
+        let win = win.clone();
+        move |_| {
+            win.close();
+            compress_dialog(&ui);
+        }
+    });
+    let extract = make_row("Extract arsip", "Pilih arsip lalu folder tujuan", "archive-extract");
+    extract.connect_activated({
+        let ui = ui.clone();
+        let win = win.clone();
+        move |_| {
+            win.close();
+            wizard_extract(&ui);
+        }
+    });
+    let test = make_row("Uji arsip", "Verifikasi integritas isi arsip", "dialog-ok-apply");
+    test.connect_activated({
+        let ui = ui.clone();
+        let win = win.clone();
+        move |_| {
+            win.close();
+            wizard_test(&ui);
+        }
+    });
+
+    group.add(&open);
+    group.add(&create);
+    group.add(&extract);
+    group.add(&test);
+    page.add(&group);
+
+    let header = adw::HeaderBar::new();
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&page));
+    win.set_content(Some(&toolbar));
+    win.present();
+}
+
+/// Wizard: pilih arsip → pilih folder tujuan → extract.
+fn wizard_extract(ui: &Rc<Ui>) {
+    let dialog = gtk::FileDialog::builder().title("Pilih arsip untuk di-extract").build();
+    let win = ui.window.clone();
+    let ui = ui.clone();
+    dialog.open(Some(&win), gio::Cancellable::NONE, move |res| {
+        let Ok(file) = res else { return };
+        let Some(archive) = file.path() else { return };
+        let folder = gtk::FileDialog::builder().title("Extract ke folder…").build();
+        let ui = ui.clone();
+        folder.select_folder(Some(&ui.window.clone()), gio::Cancellable::NONE, move |res| {
+            if let Ok(f) = res {
+                if let Some(dest) = f.path() {
+                    run_extract(&ui, archive.clone(), dest, None);
+                }
+            }
+        });
+    });
+}
+
+/// Wizard: pilih arsip → uji integritas.
+fn wizard_test(ui: &Rc<Ui>) {
+    let dialog = gtk::FileDialog::builder().title("Pilih arsip untuk diuji").build();
+    let win = ui.window.clone();
+    let ui = ui.clone();
+    dialog.open(Some(&win), gio::Cancellable::NONE, move |res| {
+        if let Ok(file) = res {
+            if let Some(archive) = file.path() {
+                run_test(&ui, archive, None);
+            }
+        }
+    });
 }
 
 fn show_toast(ui: &Ui, msg: &str) {
