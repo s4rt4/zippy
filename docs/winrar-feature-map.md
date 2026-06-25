@@ -279,7 +279,8 @@ Catatan kunci Linux: **tak ada API menulis RAR** (unrar hanya baca), jadi semua 
 - ✅ Select all / Invert selection (File menu)
 - ✅ Generate report (Tools menu → .txt: ringkasan + tabel TSV)
 - ✅ Display in file manager (toast "Buka Folder" pasca-extract)
-- ⏳ belum: Overwrite mode di Extract (butuh perubahan signature core+CLI), View log, Delete-after-archiving, Prohibited file types, Delete-archive-to-Trash.
+- ✅ **Overwrite mode di Extract** — `OverwriteMode{Overwrite,Skip,Rename}` di core (`extract_all_with`, native via `resolve_dest`/`unique_path`, 7z `-aoa/-aos/-aou`, unrar `-o+/-o-/-or`); GUI memunculkan dialog pilihan hanya saat ada konflik (`count_conflicts`/`ask_overwrite_mode`).
+- ⏳ belum: View log, Delete-after-archiving, Prohibited file types, Delete-archive-to-Trash.
 
 **Gelombang 3 — fitur format menengah (🟡):**
 Convert archives, Rename in-archive, Archive comment (zip/7z), Split to volumes, SFX shell, Compression profiles, symlink/hardlink handling (tar), Name encoding.

@@ -68,6 +68,7 @@ pub fn sevenzip_extract(
     archive: &Path,
     dest: &Path,
     password: Option<&str>,
+    mode: crate::archive::OverwriteMode,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -77,6 +78,7 @@ pub fn sevenzip_extract(
     let mut cmd = hardened_command("7z");
     cmd.arg("x")
         .arg("-y")
+        .arg(mode.sevenzip_flag())
         .arg(format!("-o{}", dest.display()))
         .arg("--")
         .arg(archive);
@@ -276,6 +278,7 @@ pub fn unrar_extract(
     archive: &Path,
     dest: &Path,
     password: Option<&str>,
+    mode: crate::archive::OverwriteMode,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -286,7 +289,11 @@ pub fn unrar_extract(
     dest_arg.push("/"); // unrar butuh trailing slash untuk direktori tujuan
 
     let mut cmd = hardened_command("unrar");
-    cmd.arg("x").arg("-y").arg("--").arg(archive).arg(dest_arg);
+    cmd.arg("x")
+        .arg(mode.unrar_flag())
+        .arg("--")
+        .arg(archive)
+        .arg(dest_arg);
     run_capture(&mut cmd, password, Some(cancel))?;
 
     progress.emit(ProgressEvent::Finished {

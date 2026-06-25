@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use tar::Archive as TarArchive;
 
-use crate::archive::Entry;
+use crate::archive::{Entry, OverwriteMode};
 use crate::cancel::CancelToken;
 use crate::error::Result;
 use crate::progress::{ProgressEvent, ProgressSink};
@@ -25,6 +25,45 @@ pub(crate) fn prepare_dest(dest: &Path, name: &str) -> Result<PathBuf> {
         fs::create_dir_all(parent)?;
     }
     Ok(out)
+}
+
+/// Tentukan path tujuan untuk satu **berkas** sesuai [`OverwriteMode`], setelah
+/// guard Zip Slip + membuat direktori induk. Mengembalikan:
+/// - `Some(path)` → tulis ke `path` (mungkin sudah di-rename agar unik),
+/// - `None` → lewati (berkas sudah ada & mode `Skip`).
+pub(crate) fn resolve_dest(
+    dest: &Path,
+    name: &str,
+    mode: OverwriteMode,
+) -> Result<Option<PathBuf>> {
+    let out = prepare_dest(dest, name)?;
+    if !out.exists() {
+        return Ok(Some(out));
+    }
+    match mode {
+        OverwriteMode::Overwrite => Ok(Some(out)),
+        OverwriteMode::Skip => Ok(None),
+        OverwriteMode::Rename => Ok(Some(unique_path(&out))),
+    }
+}
+
+/// Cari nama unik untuk `path` yang sudah ada: `foo.txt` → `foo (1).txt`,
+/// `foo (2).txt`, … (gaya WinRAR/Nautilus).
+fn unique_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = path.extension().and_then(|s| s.to_str());
+    let mut n = 1u32;
+    loop {
+        let candidate = match ext {
+            Some(e) => parent.join(format!("{stem} ({n}).{e}")),
+            None => parent.join(format!("{stem} ({n})")),
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 /// Salin `reader` → `writer` sambil menegakkan batas dekompresi dan memeriksa
@@ -95,6 +134,7 @@ pub(crate) fn extract_tar<R: Read>(
     reader: R,
     dest: &Path,
     input_size: u64,
+    mode: OverwriteMode,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -111,11 +151,10 @@ pub(crate) fn extract_tar<R: Read>(
         let mut entry = entry?;
         let is_dir = entry.header().entry_type().is_dir();
         let name = entry.path()?.to_string_lossy().into_owned();
-        let out = prepare_dest(dest, &name)?;
 
         if is_dir {
-            fs::create_dir_all(&out)?;
-        } else {
+            fs::create_dir_all(prepare_dest(dest, &name)?)?;
+        } else if let Some(out) = resolve_dest(dest, &name, mode)? {
             copy_guarded_to_file(&mut entry, &out, &mut guard, cancel)?;
         }
 
@@ -151,6 +190,50 @@ mod tests {
             buf[..n].fill(b'x');
             Ok(n)
         }
+    }
+
+    #[test]
+    fn resolve_dest_new_file_returns_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Skip)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, tmp.path().join("a.txt"));
+    }
+
+    #[test]
+    fn resolve_dest_skip_returns_none_when_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), b"x").unwrap();
+        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Skip).unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn resolve_dest_overwrite_returns_same_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), b"x").unwrap();
+        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Overwrite)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, tmp.path().join("a.txt"));
+    }
+
+    #[test]
+    fn resolve_dest_rename_picks_unique_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), b"x").unwrap();
+        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Rename)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, tmp.path().join("a (1).txt"));
+
+        // Bila "(1)" juga ada → lanjut ke "(2)".
+        std::fs::write(tmp.path().join("a (1).txt"), b"x").unwrap();
+        let got2 = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Rename)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got2, tmp.path().join("a (2).txt"));
     }
 
     #[test]

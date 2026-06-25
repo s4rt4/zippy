@@ -17,7 +17,7 @@ pub mod safety;
 pub mod subprocess;
 pub mod tools;
 
-pub use archive::{ArchiveKind, Entry, Level};
+pub use archive::{ArchiveKind, Entry, Level, OverwriteMode};
 pub use cancel::CancelToken;
 pub use error::{Error, Result};
 pub use formats::Format;

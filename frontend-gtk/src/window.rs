@@ -18,7 +18,9 @@ use gtk4::gdk;
 use gtk4::gio;
 use gtk4::glib;
 use libadwaita as adw;
-use zippy_core::{ArchiveKind, CancelToken, Entry, Error, Level, ProgressEvent, ProgressSink};
+use zippy_core::{
+    ArchiveKind, CancelToken, Entry, Error, Level, OverwriteMode, ProgressEvent, ProgressSink,
+};
 
 use crate::config::{self, Config};
 use crate::file_list::{self, FileListView, Row};
@@ -843,7 +845,7 @@ fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
                 }
                 if let Some(dir) = std::env::var_os("ZIPPY_EXTRACT_TO") {
                     let pw = std::env::var("ZIPPY_PASSWORD").ok();
-                    run_extract(&ui, path.clone(), PathBuf::from(dir), pw);
+                    run_extract(&ui, path.clone(), PathBuf::from(dir), pw, OverwriteMode::Overwrite);
                 }
                 if std::env::var_os("ZIPPY_TEST").is_some() {
                     run_test(&ui, path.clone(), std::env::var("ZIPPY_PASSWORD").ok());
@@ -886,16 +888,70 @@ fn extract_dialog(ui: &Rc<Ui>) {
     dialog.select_folder(Some(&win), gio::Cancellable::NONE, move |res| {
         if let Ok(folder) = res {
             if let Some(dest) = folder.path() {
-                run_extract(&ui, archive.clone(), dest, None);
+                start_extract(&ui, archive.clone(), dest);
             }
         }
     });
 }
 
+/// Mulai extract arsip terbuka ke `dest`. Bila ada berkas tujuan yang sudah
+/// ada, tanyakan dulu kebijakan overwrite (Overwrite/Skip/Rename); jika tidak
+/// ada konflik, langsung jalan.
+fn start_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf) {
+    let conflicts = count_conflicts(&ui.entries.borrow(), &dest);
+    if conflicts == 0 {
+        run_extract(ui, archive, dest, None, OverwriteMode::Overwrite);
+    } else {
+        ask_overwrite_mode(ui, archive, dest, conflicts);
+    }
+}
+
+/// Hitung berapa berkas (non-folder) yang sudah ada di `dest`.
+fn count_conflicts(entries: &[Entry], dest: &Path) -> usize {
+    entries
+        .iter()
+        .filter(|e| !e.is_dir && dest.join(&e.name).exists())
+        .count()
+}
+
+/// Dialog pilihan kebijakan overwrite saat ada konflik berkas.
+fn ask_overwrite_mode(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, conflicts: usize) {
+    let body = format!(
+        "{conflicts} berkas sudah ada di folder tujuan.\nPilih cara menanganinya:"
+    );
+    let dialog =
+        adw::MessageDialog::new(Some(&ui.window), Some("Berkas Sudah Ada"), Some(&body));
+    dialog.add_response("cancel", "Batal");
+    dialog.add_response("skip", "Lewati");
+    dialog.add_response("rename", "Beri Nama Baru");
+    dialog.add_response("overwrite", "Timpa Semua");
+    dialog.set_response_appearance("overwrite", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("overwrite"));
+    dialog.set_close_response("cancel");
+
+    let ui = ui.clone();
+    dialog.connect_response(None, move |_, resp| {
+        let mode = match resp {
+            "overwrite" => OverwriteMode::Overwrite,
+            "skip" => OverwriteMode::Skip,
+            "rename" => OverwriteMode::Rename,
+            _ => return,
+        };
+        run_extract(&ui, archive.clone(), dest.clone(), None, mode);
+    });
+    dialog.present();
+}
+
 /// Extract `archive` → `dest`. `password` dipakai bila archive terenkripsi;
 /// bila `None` dan core melaporkan [`Error::Password`], UI memunculkan dialog
 /// password lalu memanggil ulang dengan password yang dimasukkan.
-fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, password: Option<String>) {
+fn run_extract(
+    ui: &Rc<Ui>,
+    archive: PathBuf,
+    dest: PathBuf,
+    password: Option<String>,
+    mode: OverwriteMode,
+) {
     let password = password.or_else(|| ui.default_password.borrow().clone());
     let cancel = CancelToken::new();
     *ui.cancel.borrow_mut() = Some(cancel.clone());
@@ -908,10 +964,11 @@ fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, password: Option<St
     std::thread::spawn(move || {
         let res = {
             let sink = ChannelSink::new(tx_ev);
-            zippy_core::archive::extract_all(
+            zippy_core::archive::extract_all_with(
                 &worker_archive,
                 &worker_dest,
                 worker_pw.as_deref(),
+                mode,
                 &cancel,
                 &sink,
             )
@@ -964,7 +1021,7 @@ fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, password: Option<St
             }
             Ok(Err(Error::Password)) => {
                 tracing::warn!("extract perlu password");
-                prompt_password(&ui, &archive, &dest);
+                prompt_password(&ui, &archive, &dest, mode);
             }
             Ok(Err(e)) => {
                 show_toast(&ui, &format!("Gagal extract: {e}"));
@@ -1009,7 +1066,7 @@ where
 }
 
 /// Minta password (wajib) untuk meng-extract archive terenkripsi, lalu retry.
-fn prompt_password(ui: &Rc<Ui>, archive: &Path, dest: &Path) {
+fn prompt_password(ui: &Rc<Ui>, archive: &Path, dest: &Path, mode: OverwriteMode) {
     let name = archive
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -1022,7 +1079,7 @@ fn prompt_password(ui: &Rc<Ui>, archive: &Path, dest: &Path) {
         &format!("Masukkan password untuk \"{name}\"."),
         "Buka",
         move |ui, pw| match pw {
-            Some(pw) => run_extract(ui, archive.clone(), dest.clone(), Some(pw)),
+            Some(pw) => run_extract(ui, archive.clone(), dest.clone(), Some(pw), mode),
             None => show_toast(ui, "Password kosong"),
         },
     );
@@ -2458,7 +2515,7 @@ fn wizard_extract(ui: &Rc<Ui>) {
         folder.select_folder(Some(&ui.window.clone()), gio::Cancellable::NONE, move |res| {
             if let Ok(f) = res {
                 if let Some(dest) = f.path() {
-                    run_extract(&ui, archive.clone(), dest, None);
+                    run_extract(&ui, archive.clone(), dest, None, OverwriteMode::Overwrite);
                 }
             }
         });

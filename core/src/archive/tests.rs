@@ -50,6 +50,59 @@ fn roundtrip_zip() {
 }
 
 #[test]
+fn overwrite_mode_skip_rename_overwrite() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let archive = tmp.path().join("out.zip");
+    compress(&src_refs, &archive, None, &CancelToken::new(), &NullSink).unwrap();
+
+    let out = tmp.path().join("out");
+    fs::create_dir_all(&out).unwrap();
+    // Pre-seed a.txt dengan isi berbeda untuk memicu konflik.
+    fs::write(out.join("a.txt"), b"LAMA").unwrap();
+
+    // Skip: a.txt yang sudah ada tidak berubah; sub/b.txt baru tetap dibuat.
+    extract_all_with(
+        &archive,
+        &out,
+        None,
+        OverwriteMode::Skip,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"LAMA");
+    assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b"isi kedua\n");
+
+    // Rename: a.txt asli tetap, salinan baru jadi "a (1).txt".
+    extract_all_with(
+        &archive,
+        &out,
+        None,
+        OverwriteMode::Rename,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"LAMA");
+    assert_eq!(fs::read(out.join("a (1).txt")).unwrap(), b"halo dunia\n");
+
+    // Overwrite: a.txt ditimpa isi dari arsip.
+    extract_all_with(
+        &archive,
+        &out,
+        None,
+        OverwriteMode::Overwrite,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"halo dunia\n");
+}
+
+#[test]
 fn roundtrip_tar() {
     roundtrip("tar");
 }
