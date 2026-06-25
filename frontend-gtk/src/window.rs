@@ -67,6 +67,10 @@ struct Ui {
     window: gtk::ApplicationWindow,
     toast: adw::ToastOverlay,
     list: FileListView,
+    /// Panel pohon folder (sidebar kiri).
+    tree: crate::tree::FolderTree,
+    /// Wadah pohon (untuk toggle visibilitas).
+    tree_pane: gtk::ScrolledWindow,
     address: gtk::Label,
     status: gtk::Label,
     revealer: gtk::Revealer,
@@ -103,6 +107,8 @@ pub fn build_ui(app: &adw::Application) {
     apply_scheme(cfg.scheme);
 
     let list = file_list::build();
+    let folder_tree = crate::tree::build();
+    let tree_pane = folder_tree.widget.clone();
 
     let address = gtk::Label::builder()
         .xalign(0.0)
@@ -175,6 +181,8 @@ pub fn build_ui(app: &adw::Application) {
         window: window.clone(),
         toast: adw::ToastOverlay::new(),
         list,
+        tree: folder_tree,
+        tree_pane: tree_pane.clone(),
         address: address.clone(),
         status: status.clone(),
         revealer: revealer.clone(),
@@ -228,7 +236,14 @@ pub fn build_ui(app: &adw::Application) {
     content.append(&addr_frame);
     content.append(&search_bar);
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    content.append(&ui.list.widget);
+    // Pohon folder (kiri) | daftar isi (kanan) dalam Paned.
+    let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+    paned.set_start_child(Some(&ui.tree_pane));
+    paned.set_end_child(Some(&ui.list.widget));
+    paned.set_position(200);
+    paned.set_vexpand(true);
+    ui.tree_pane.set_visible(ui.config.borrow().show_folder_tree);
+    content.append(&paned);
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     content.append(&revealer);
     content.append(&statusbar);
@@ -282,6 +297,18 @@ pub fn build_ui(app: &adw::Application) {
 
     setup_drop_target(&ui);
     setup_context_menu(&ui);
+
+    // Klik folder di pohon → navigasi daftar utama.
+    ui.tree.list_view.connect_activate({
+        let ui = ui.clone();
+        move |_, pos| {
+            if let Some(comps) = ui.tree.components_at(pos) {
+                *ui.cwd.borrow_mut() = comps;
+                render(&ui);
+            }
+        }
+    });
+
     render(&ui);
 
     // Akselerator keyboard gaya WinRAR.
@@ -340,6 +367,7 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     add_action(&group, "log", ui, show_log);
     add_action(&group, "encoding", ui, choose_encoding_dialog);
     add_action(&group, "profiles", ui, show_profiles_manager);
+    add_action(&group, "toggle_tree", ui, toggle_folder_tree);
     add_action(&group, "add", ui, compress_dialog);
     add_action(&group, "extract", ui, extract_dialog);
     add_action(&group, "test", ui, test_dialog);
@@ -421,6 +449,7 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     refresh_favorites_menu(ui);
 
     let options = gio::Menu::new();
+    options.append(Some("Folder Tree (tampil/sembunyi)"), Some("win.toggle_tree"));
     options.append(Some("Preferensi…"), Some("win.options"));
     options.append(Some("Profil Kompresi…"), Some("win.profiles"));
     options.append(Some("Penyandian Nama…"), Some("win.encoding"));
@@ -860,6 +889,11 @@ fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
                 ui.cwd.borrow_mut().clear();
                 *ui.current.borrow_mut() = Some(path.clone());
                 ui.extract_btn.set_sensitive(true);
+                let label = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "/".to_string());
+                ui.tree.rebuild(&ui.entries.borrow(), &label);
                 render(&ui);
                 tracing::info!(entries = total, archive = %path.display(), "archive dibuka");
                 if weak {
@@ -891,7 +925,17 @@ fn close_archive(ui: &Rc<Ui>) {
     ui.cwd.borrow_mut().clear();
     *ui.current.borrow_mut() = None;
     ui.extract_btn.set_sensitive(false);
+    ui.tree.rebuild(&[], "—");
     render(ui);
+}
+
+/// Toggle visibilitas panel pohon folder (Options → Folder Tree).
+fn toggle_folder_tree(ui: &Rc<Ui>) {
+    let show = !ui.tree_pane.is_visible();
+    ui.tree_pane.set_visible(show);
+    let mut c = ui.config.borrow_mut();
+    c.show_folder_tree = show;
+    c.save();
 }
 
 // ---------------------------------------------------------------------------

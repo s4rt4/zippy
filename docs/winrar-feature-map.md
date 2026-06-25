@@ -79,7 +79,7 @@ Catatan kunci Linux: **tak ada API menulis RAR** (unrar hanya baca), jadi semua 
 | Import and export (config) | 🟢 | Export/import `config.ini` |
 | Clear history | 🟢 | Bergantung fitur History dulu |
 | File list ► (submenu) | 🟡 | Toggle kolom/tampilan (sebagian sudah di file_list) |
-| Folder tree ► | 🟡 | Panel pohon folder kiri (opsional) |
+| Folder tree ► | ✅ | Panel pohon folder kiri (GtkListView+TreeListModel); klik folder → navigasi; toggle di Options; persisten di config |
 | Themes ► | ✅ | Sudah ada (combo tema) |
 | Name encoding (Ctrl+E) | 🟡 | Pilih encoding nama file legacy (CP437/Shift-JIS dll) |
 | View log / Clear log | 🟢 | Log operasi in-memory/file |

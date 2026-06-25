@@ -49,6 +49,8 @@ pub struct Config {
     pub name_encoding: NameEncoding,
     /// Profil kompresi tersimpan: `(nama, level)`.
     pub profiles: Vec<(String, Level)>,
+    /// Tampilkan panel pohon folder di kiri.
+    pub show_folder_tree: bool,
 }
 
 impl Default for Config {
@@ -61,6 +63,7 @@ impl Default for Config {
             delete_after_extract: false,
             name_encoding: NameEncoding::Utf8,
             profiles: Vec::new(),
+            show_folder_tree: true,
         }
     }
 }
@@ -168,6 +171,7 @@ impl Config {
                     "prohibited" => c.prohibited = parse_prohibited(v),
                     "delete_after_extract" => c.delete_after_extract = v == "true",
                     "name_encoding" => c.name_encoding = enc_parse(v),
+                    "show_folder_tree" => c.show_folder_tree = v != "false",
                     k if k.starts_with("profile.") => {
                         let name = k.trim_start_matches("profile.").trim();
                         if !name.is_empty() {
@@ -184,13 +188,14 @@ impl Config {
     pub fn save(&self) {
         let _ = fs::create_dir_all(config_dir());
         let mut body = format!(
-            "compression_level={}\ncolor_scheme={}\nconfirm_delete={}\nprohibited={}\ndelete_after_extract={}\nname_encoding={}\n",
+            "compression_level={}\ncolor_scheme={}\nconfirm_delete={}\nprohibited={}\ndelete_after_extract={}\nname_encoding={}\nshow_folder_tree={}\n",
             level_str(self.level),
             self.scheme.as_str(),
             self.confirm_delete,
             self.prohibited.join(" "),
             self.delete_after_extract,
             enc_str(self.name_encoding),
+            self.show_folder_tree,
         );
         for (name, level) in &self.profiles {
             body.push_str(&format!("profile.{name}={}\n", level_str(*level)));

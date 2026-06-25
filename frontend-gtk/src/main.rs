@@ -8,6 +8,7 @@ mod cli;
 mod config;
 mod file_list;
 mod progress;
+mod tree;
 mod window;
 
 use adw::prelude::*;
