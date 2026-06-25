@@ -77,6 +77,9 @@ struct Ui {
     filter: RefCell<String>,
     /// Archive yang sedang dibuka (None bila belum ada).
     current: RefCell<Option<PathBuf>>,
+    /// Password default sesi (File → Set default password). Dipakai sebagai
+    /// fallback saat operasi tidak diberi password eksplisit.
+    default_password: RefCell<Option<String>>,
     /// Token operasi yang sedang berjalan (None bila idle).
     cancel: RefCell<Option<CancelToken>>,
     /// Daftar entry mentah hasil `list` (sumber navigasi folder).
@@ -178,6 +181,7 @@ pub fn build_ui(app: &adw::Application) {
         search_bar: search_bar.clone(),
         filter: RefCell::new(String::new()),
         current: RefCell::new(None),
+        default_password: RefCell::new(None),
         cancel: RefCell::new(None),
         entries: RefCell::new(Vec::new()),
         cwd: RefCell::new(Vec::new()),
@@ -316,6 +320,11 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     add_action(&group, "open", ui, open_dialog);
     add_action(&group, "close", ui, close_archive);
     add_action(&group, "quit", ui, |ui| ui.window.close());
+    add_action(&group, "set_pw", ui, set_default_password);
+    add_action(&group, "save_copy", ui, save_archive_copy);
+    add_action(&group, "select_all", ui, select_all_rows);
+    add_action(&group, "invert_sel", ui, invert_selection);
+    add_action(&group, "report", ui, generate_report);
     add_action(&group, "add", ui, compress_dialog);
     add_action(&group, "extract", ui, extract_dialog);
     add_action(&group, "test", ui, test_dialog);
@@ -355,9 +364,19 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     let menu = gio::Menu::new();
 
     let file = gio::Menu::new();
-    file.append(Some("Buka Archive…"), Some("win.open"));
-    file.append(Some("Tutup Archive"), Some("win.close"));
-    file.append(Some("Keluar"), Some("win.quit"));
+    let file_open = gio::Menu::new();
+    file_open.append(Some("Buka Archive…"), Some("win.open"));
+    file_open.append(Some("Simpan Salinan Archive…"), Some("win.save_copy"));
+    file_open.append(Some("Set Password Default…"), Some("win.set_pw"));
+    file_open.append(Some("Tutup Archive"), Some("win.close"));
+    file.append_section(None, &file_open);
+    let file_sel = gio::Menu::new();
+    file_sel.append(Some("Pilih Semua"), Some("win.select_all"));
+    file_sel.append(Some("Balik Seleksi"), Some("win.invert_sel"));
+    file.append_section(None, &file_sel);
+    let file_exit = gio::Menu::new();
+    file_exit.append(Some("Keluar"), Some("win.quit"));
+    file.append_section(None, &file_exit);
     menu.append_submenu(Some("File"), &file);
 
     let cmds = gio::Menu::new();
@@ -371,6 +390,7 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     tools.append(Some("Wizard"), Some("win.wizard"));
     tools.append(Some("Pindai Virus…"), Some("win.scan"));
     tools.append(Some("Perbaiki Arsip…"), Some("win.repair"));
+    tools.append(Some("Buat Laporan…"), Some("win.report"));
     tools.append(Some("Cari…"), Some("win.find"));
     menu.append_submenu(Some("Tools"), &tools);
 
@@ -876,6 +896,7 @@ fn extract_dialog(ui: &Rc<Ui>) {
 /// bila `None` dan core melaporkan [`Error::Password`], UI memunculkan dialog
 /// password lalu memanggil ulang dengan password yang dimasukkan.
 fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, password: Option<String>) {
+    let password = password.or_else(|| ui.default_password.borrow().clone());
     let cancel = CancelToken::new();
     *ui.cancel.borrow_mut() = Some(cancel.clone());
 
@@ -934,7 +955,7 @@ fn run_extract(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, password: Option<St
         *ui.cancel.borrow_mut() = None;
         match rx_done.recv().await {
             Ok(Ok(())) => {
-                show_toast(&ui, "Extract selesai");
+                show_toast_open_folder(&ui, "Extract selesai", dest.clone());
                 tracing::info!("extract selesai");
             }
             Ok(Err(Error::Cancelled)) => {
@@ -1005,6 +1026,160 @@ fn prompt_password(ui: &Rc<Ui>, archive: &Path, dest: &Path) {
             None => show_toast(ui, "Password kosong"),
         },
     );
+}
+
+// ---------------------------------------------------------------------------
+// Gelombang 2: password default · simpan salinan · laporan · seleksi
+// ---------------------------------------------------------------------------
+
+/// File → Set default password. Disimpan di memori sesi (tidak persisten),
+/// dipakai sebagai fallback oleh extract/test/view.
+fn set_default_password(ui: &Rc<Ui>) {
+    ask_password(
+        ui,
+        "Password Default",
+        "Dipakai otomatis untuk extract/test/view arsip terenkripsi (sesi ini saja).",
+        "Simpan",
+        |ui, pw| {
+            let set = pw.is_some();
+            *ui.default_password.borrow_mut() = pw;
+            show_toast(
+                ui,
+                if set {
+                    "Password default diset"
+                } else {
+                    "Password default dikosongkan"
+                },
+            );
+        },
+    );
+}
+
+/// File → Simpan salinan archive sebagai… (copy file arsip apa adanya).
+fn save_archive_copy(ui: &Rc<Ui>) {
+    let archive = match ui.current.borrow().clone() {
+        Some(p) => p,
+        None => {
+            show_toast(ui, "Belum ada archive terbuka");
+            return;
+        }
+    };
+    let dialog = gtk::FileDialog::builder()
+        .title("Simpan salinan archive sebagai…")
+        .build();
+    if let Some(name) = archive.file_name() {
+        dialog.set_initial_name(Some(&name.to_string_lossy()));
+    }
+    let win = ui.window.clone();
+    let ui = ui.clone();
+    dialog.save(Some(&win), gio::Cancellable::NONE, move |res| {
+        if let Ok(file) = res {
+            if let Some(dest) = file.path() {
+                if dest == archive {
+                    show_toast(&ui, "Tujuan sama dengan sumber");
+                    return;
+                }
+                match std::fs::copy(&archive, &dest) {
+                    Ok(_) => show_toast(&ui, "Salinan archive disimpan"),
+                    Err(e) => show_toast(&ui, &format!("Gagal menyimpan: {e}")),
+                }
+            }
+        }
+    });
+}
+
+/// Tools → Generate report: tulis daftar isi + ringkasan ke berkas teks.
+fn generate_report(ui: &Rc<Ui>) {
+    let archive = match ui.current.borrow().clone() {
+        Some(p) => p,
+        None => {
+            show_toast(ui, "Belum ada archive terbuka");
+            return;
+        }
+    };
+    let entries = ui.entries.borrow().clone();
+    if entries.is_empty() {
+        show_toast(ui, "Archive kosong");
+        return;
+    }
+    let report = build_report(&archive, &entries);
+    let stem = archive
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("archive");
+    let dialog = gtk::FileDialog::builder().title("Simpan laporan…").build();
+    dialog.set_initial_name(Some(&format!("{stem}-laporan.txt")));
+    let win = ui.window.clone();
+    let ui = ui.clone();
+    dialog.save(Some(&win), gio::Cancellable::NONE, move |res| {
+        if let Ok(file) = res {
+            if let Some(dest) = file.path() {
+                match std::fs::write(&dest, report.as_bytes()) {
+                    Ok(_) => {
+                        let dir = dest.parent().map(Path::to_path_buf).unwrap_or(dest);
+                        show_toast_open_folder(&ui, "Laporan disimpan", dir);
+                    }
+                    Err(e) => show_toast(&ui, &format!("Gagal menulis laporan: {e}")),
+                }
+            }
+        }
+    });
+}
+
+/// Bangun isi laporan teks (header + ringkasan + tabel TSV).
+fn build_report(archive: &Path, entries: &[Entry]) -> String {
+    let total: u64 = entries.iter().map(|e| e.size).sum();
+    let packed: u64 = entries.iter().map(|e| e.compressed_size).sum();
+    let files = entries.iter().filter(|e| !e.is_dir).count();
+    let dirs = entries.iter().filter(|e| e.is_dir).count();
+
+    let mut s = String::new();
+    s.push_str(&format!("Laporan Archive — Zippy v{}\n", zippy_core::VERSION));
+    s.push_str(&format!("Archive : {}\n", archive.display()));
+    s.push_str(&format!("Berkas  : {files}   Folder: {dirs}\n"));
+    s.push_str(&format!(
+        "Ukuran  : {} bytes (packed {} bytes",
+        file_list::group_thousands(total),
+        file_list::group_thousands(packed)
+    ));
+    if total > 0 {
+        s.push_str(&format!(", rasio {:.1}%", packed as f64 / total as f64 * 100.0));
+    }
+    s.push_str(")\n\n");
+    s.push_str("Nama\tUkuran\tPacked\tModified\tCRC32\n");
+    for e in entries {
+        let crc = e.crc32.map(|c| format!("{c:08X}")).unwrap_or_default();
+        s.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\n",
+            e.name,
+            e.size,
+            e.compressed_size,
+            e.modified.clone().unwrap_or_default(),
+            crc
+        ));
+    }
+    s
+}
+
+/// File → Pilih semua baris di folder yang sedang ditampilkan.
+fn select_all_rows(ui: &Rc<Ui>) {
+    if let Some(sel) = ui.list.column_view.model().and_downcast::<gtk::MultiSelection>() {
+        sel.select_all();
+    }
+}
+
+/// File → Balik seleksi.
+fn invert_selection(ui: &Rc<Ui>) {
+    let Some(sel) = ui.list.column_view.model().and_downcast::<gtk::MultiSelection>() else {
+        return;
+    };
+    for i in 0..sel.n_items() {
+        if sel.is_selected(i) {
+            sel.unselect_item(i);
+        } else {
+            sel.select_item(i, false);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1238,6 +1413,7 @@ fn test_dialog(ui: &Rc<Ui>) {
 }
 
 fn run_test(ui: &Rc<Ui>, archive: PathBuf, password: Option<String>) {
+    let password = password.or_else(|| ui.default_password.borrow().clone());
     let cancel = CancelToken::new();
     *ui.cancel.borrow_mut() = Some(cancel.clone());
 
@@ -1484,6 +1660,7 @@ fn view_entry(ui: &Rc<Ui>, obj: &file_list::EntryObject) {
 }
 
 fn run_view(ui: &Rc<Ui>, archive: PathBuf, name: String, password: Option<String>) {
+    let password = password.or_else(|| ui.default_password.borrow().clone());
     let dest = std::env::temp_dir().join("zippy-view");
     let cancel = CancelToken::new();
     let (tx, rx) = async_channel::bounded(1);
@@ -2306,6 +2483,21 @@ fn show_toast(ui: &Ui, msg: &str) {
     ui.toast.add_toast(adw::Toast::new(msg));
 }
 
+/// Toast dengan tombol "Buka Folder" yang membuka `dir` di file manager.
+fn show_toast_open_folder(ui: &Rc<Ui>, msg: &str, dir: PathBuf) {
+    let toast = adw::Toast::builder().title(msg).button_label("Buka Folder").build();
+    let ui2 = ui.clone();
+    toast.connect_button_clicked(move |_| {
+        let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(&dir)));
+        launcher.launch(Some(&ui2.window), gio::Cancellable::NONE, |res| {
+            if let Err(e) = res {
+                tracing::warn!("buka folder gagal: {e}");
+            }
+        });
+    });
+    ui.toast.add_toast(toast);
+}
+
 /// Mode benchmark Sprint 0 (dipakai scripts/measure.sh): bila `ZIPPY_BENCH`
 /// diset, biarkan window settle lalu laporkan RSS dan quit.
 fn maybe_bench(app: &adw::Application) {
@@ -2331,4 +2523,38 @@ fn read_vmrss_kb() -> Option<u64> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_has_header_summary_and_rows() {
+        let entries = vec![
+            Entry {
+                name: "a.txt".into(),
+                size: 1000,
+                compressed_size: 400,
+                is_dir: false,
+                modified: Some("2026-06-25 10:00".into()),
+                crc32: Some(0xDEADBEEF),
+            },
+            Entry {
+                name: "sub".into(),
+                size: 0,
+                compressed_size: 0,
+                is_dir: true,
+                modified: None,
+                crc32: None,
+            },
+        ];
+        let r = build_report(Path::new("/tmp/x.zip"), &entries);
+        assert!(r.contains("Laporan Archive"));
+        assert!(r.contains("/tmp/x.zip"));
+        assert!(r.contains("Berkas  : 1"));
+        assert!(r.contains("Folder: 1"));
+        assert!(r.contains("rasio 40.0%"));
+        assert!(r.contains("a.txt\t1000\t400\t2026-06-25 10:00\tDEADBEEF"));
+    }
 }

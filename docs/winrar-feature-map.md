@@ -273,8 +273,13 @@ Catatan kunci Linux: **tak ada API menulis RAR** (unrar hanya baca), jadi semua 
 2. ✅ **Scan virus** — ClamAV (`clamdscan`/`clamscan`), pindai arsip langsung (ClamAV buka isi sendiri) → laporan good/bad-notif; `core::tools::scan`.
 3. ✅ **Ganti ikon toolbar** ke 12 SVG baru (add/extract/test/view/delete/find/wizard/info/repair/scan + good/bad-notif), di-embed via `ACTION_ICONS` + `setup_icon_theme`.
 
-**Gelombang 2 — menang besar, murah (🟢):**
-Overwrite mode di Extract, Set default password, Select/Invert selection, Generate report, View log, Delete-after-archiving, Display in file manager, Prohibited file types (security), Delete-archive-to-Trash, Save copy as.
+**Gelombang 2 — menang besar, murah (🟢) — sebagian ✅:**
+- ✅ Set default password (File menu, fallback extract/test/view)
+- ✅ Save archive copy as (File menu)
+- ✅ Select all / Invert selection (File menu)
+- ✅ Generate report (Tools menu → .txt: ringkasan + tabel TSV)
+- ✅ Display in file manager (toast "Buka Folder" pasca-extract)
+- ⏳ belum: Overwrite mode di Extract (butuh perubahan signature core+CLI), View log, Delete-after-archiving, Prohibited file types, Delete-archive-to-Trash.
 
 **Gelombang 3 — fitur format menengah (🟡):**
 Convert archives, Rename in-archive, Archive comment (zip/7z), Split to volumes, SFX shell, Compression profiles, symlink/hardlink handling (tar), Name encoding.
