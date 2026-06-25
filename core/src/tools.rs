@@ -48,56 +48,75 @@ impl ScanReport {
     }
 }
 
+/// Apakah biner scanner `name` bisa di-spawn (cek `--version`).
+fn scanner_available(name: &str) -> bool {
+    hardened_command(name)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|st| st.success())
+        .unwrap_or(false)
+}
+
 /// Scanner ClamAV yang tersedia di PATH, prioritas daemon (`clamdscan`, lebih
-/// cepat) lalu standalone (`clamscan`). `None` bila tidak ada.
+/// cepat) lalu standalone (`clamscan`). `None` bila tidak ada. Dipakai UI untuk
+/// memberi tahu apakah fitur scan aktif (bukan untuk memilih scanner final —
+/// lihat [`scan`] yang mencoba berurutan + fallback).
 pub fn virus_scanner() -> Option<&'static str> {
-    for s in ["clamdscan", "clamscan"] {
-        let ok = hardened_command(s)
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|st| st.success())
-            .unwrap_or(false);
-        if ok {
-            return Some(s);
-        }
-    }
-    None
+    ["clamdscan", "clamscan"]
+        .into_iter()
+        .find(|s| scanner_available(s))
 }
 
 /// Pindai `archive` memakai ClamAV. ClamAV membuka isi arsip sendiri (zip, 7z,
 /// rar, tar, dll) sehingga kita cukup menyodorkan file arsipnya — tidak perlu
 /// mengekstrak malware ke disk lebih dulu.
 ///
-/// Kode keluar ClamAV: `0` bersih, `1` ada virus, `2+` error.
+/// Kode keluar ClamAV: `0` bersih, `1` ada virus, `2+` error. Scanner dicoba
+/// berurutan (`clamdscan` → `clamscan`): bila yang pertama error (mis. daemon
+/// `clamd` tidak berjalan → kode 2), otomatis fallback ke berikutnya.
 pub fn scan(archive: &Path, cancel: &CancelToken) -> Result<ScanReport> {
-    let scanner = virus_scanner().ok_or_else(|| {
-        Error::Other("ClamAV tidak terpasang (butuh `clamscan` atau `clamdscan`)".into())
-    })?;
-
-    let mut cmd = hardened_command(scanner);
-    if scanner == "clamdscan" {
-        // Agar daemon (berjalan sebagai user clamav) tetap bisa membaca file
-        // milik user yang menjalankan Zippy.
-        cmd.arg("--fdpass");
+    let scanners: Vec<&str> = ["clamdscan", "clamscan"]
+        .into_iter()
+        .filter(|s| scanner_available(s))
+        .collect();
+    if scanners.is_empty() {
+        return Err(Error::Other(
+            "ClamAV tidak terpasang (butuh `clamscan` atau `clamdscan`)".into(),
+        ));
     }
-    cmd.arg("--no-summary").arg("--").arg(archive);
 
-    let out = run_status(&mut cmd, None, Some(cancel))?;
-    let raw = format!("{}{}", out.stdout, out.stderr);
-    match out.code {
-        Some(0) | Some(1) => Ok(ScanReport {
-            scanner: scanner.to_string(),
-            findings: parse_clam(&out.stdout),
-            raw,
-        }),
-        other => Err(Error::Other(format!(
-            "pemindaian gagal (kode {}): {}",
-            other.map(|c| c.to_string()).unwrap_or_else(|| "sinyal".into()),
-            out.stderr.trim()
-        ))),
+    let mut last_err = String::new();
+    for scanner in scanners {
+        let mut cmd = hardened_command(scanner);
+        if scanner == "clamdscan" {
+            // `--fdpass`: serahkan fd file agar daemon (user clamav) bisa
+            // membacanya. Bila daemon mati, clamdscan tetap keluar kode 2 →
+            // kita fallback ke clamscan di iterasi berikutnya.
+            cmd.arg("--fdpass");
+        }
+        cmd.arg("--no-summary").arg("--").arg(archive);
+
+        let out = run_status(&mut cmd, None, Some(cancel))?;
+        match out.code {
+            Some(0) | Some(1) => {
+                return Ok(ScanReport {
+                    scanner: scanner.to_string(),
+                    findings: parse_clam(&out.stdout),
+                    raw: format!("{}{}", out.stdout, out.stderr),
+                });
+            }
+            other => {
+                last_err = format!(
+                    "{scanner} gagal (kode {}): {}",
+                    other.map(|c| c.to_string()).unwrap_or_else(|| "sinyal".into()),
+                    out.stderr.trim()
+                );
+            }
+        }
     }
+    Err(Error::Other(format!("pemindaian gagal — {last_err}")))
 }
 
 /// Parse baris ClamAV bergaya `path: Signature FOUND`.
