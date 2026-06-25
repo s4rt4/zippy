@@ -292,9 +292,12 @@ Catatan kunci Linux: **tak ada API menulis RAR** (unrar hanya baca), jadi semua 
 - ✅ **Convert to SFX** — `tools::make_sfx()` → self-extracting `.sh` portabel (stub `sh`+`tar` + payload tar.gz, executable); Tools → Buat SFX.
 - ✅ **Archive comment (ZIP)** — `archive::read_comment`/`set_comment` (salin-mentah lossless + `set_comment`, tolak ZIP terenkripsi); Commands → Komentar Archive (TextView).
 - ✅ **Rename in-archive** — `archive::rename()` (ZIP `raw_copy_file_rename`/re-enkripsi AES, TAR stream-ulang via `stream_tar`, 7z `7z rn`); folder induk dipertahankan, folder rename rekursif (prefiks). GUI: F2 + Commands + context menu (`rename_selected`).
-- ⏳ belum: Split to volumes (7z `-v`), Compression profiles, symlink/hardlink tar, Name encoding.
+- ✅ **Split to volumes** — `CompressOptions.volume` → 7z `-v<size>`; field di dialog Add (khusus 7z).
+- ✅ **Compression profiles** — `Config.profiles` (preset nama→level), manager di Options/Preferences, dropdown di dialog Add.
+- ✅ **Symlink as link (tar)** — `CompressOptions.symlinks_as_links` → `tar::Builder::follow_symlinks(false)` + no-rekursi; checkbox di dialog Add (khusus tar). (Hardlink belum.)
+- ✅ **Name encoding** — `NameEncoding` (Win-1252/1251, Shift-JIS, GBK, Big5, EUC-KR via `encoding_rs`; CP437 tak ada di encoding_rs) + `list_with_encoding` decode `name_raw`; Options→Penyandian Nama (Ctrl+E) + Preferences.
 
-Akselerator keyboard ditambahkan: F2 (rename), F3 (find), Delete (hapus), Ctrl+O (open).
+**Gelombang 3 = SELESAI** (kecuali hardlink-as-link, nicher). Akselerator: F2 rename, F3 find, Delete, Ctrl+O open, Ctrl+E encoding.
 
 **Tidak dikerjakan (🔴) — khas Windows / RAR-create:**
 Change drive, Lock archive, Quick-open-info, NTFS streams/security, atribut "Archive", taskbar progress, Convert-to-SFX-.exe.

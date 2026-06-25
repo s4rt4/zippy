@@ -101,6 +101,7 @@ pub fn sevenzip_compress(
     dest: &Path,
     password: Option<&str>,
     level: crate::archive::Level,
+    volume: Option<&str>,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -111,6 +112,10 @@ pub fn sevenzip_compress(
 
     let mut cmd = hardened_command("7z");
     cmd.arg("a").arg("-y").arg(format!("-mx={}", level.sevenzip_mx()));
+    // Split ke volume `-v<size>` (mis. `-v100m`). 7z menulis dest.7z.001, dst.
+    if let Some(size) = volume {
+        cmd.arg(format!("-v{size}"));
+    }
     // 7z hanya mengenkripsi bila flag `-p` ADA (tanpa nilai) — passwordnya
     // sendiri tetap dikirim via stdin (bukan argv, agar tidak bocor lewat
     // /proc/<pid>/cmdline). Tanpa `-p`, password di stdin diabaikan diam-diam.

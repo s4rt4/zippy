@@ -229,6 +229,79 @@ fn rename_rejects_missing_and_slash() {
 }
 
 #[test]
+fn tar_stores_symlink_as_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("src");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("real.txt"), b"hi\n").unwrap();
+    std::os::unix::fs::symlink("real.txt", dir.join("link.txt")).unwrap();
+    let inputs = [dir.join("real.txt"), dir.join("link.txt")];
+    let refs: Vec<&Path> = inputs.iter().map(|p| p.as_path()).collect();
+
+    let tar = tmp.path().join("s.tar");
+    let opts = CompressOptions {
+        symlinks_as_links: true,
+        ..Default::default()
+    };
+    compress_with_opts(&refs, &tar, &opts, &CancelToken::new(), &NullSink).unwrap();
+
+    let mut a = tar::Archive::new(File::open(&tar).unwrap());
+    let mut found = false;
+    for e in a.entries().unwrap() {
+        let e = e.unwrap();
+        if e.header().entry_type().is_symlink() {
+            found = true;
+            let target = e.link_name().unwrap().unwrap();
+            assert_eq!(target.to_str().unwrap(), "real.txt");
+        }
+    }
+    assert!(found, "symlink harus disimpan sebagai entri link");
+}
+
+#[test]
+fn sevenzip_split_volumes() {
+    if !crate::subprocess::sevenzip_available() {
+        return; // 7z tak terpasang — lewati.
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    // Data pseudo-acak (incompressible) agar ukuran arsip cukup untuk split.
+    let mut data = vec![0u8; 256 * 1024];
+    let mut x: u32 = 0x1234_5678;
+    for b in data.iter_mut() {
+        x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *b = (x >> 24) as u8;
+    }
+    let big = tmp.path().join("big.bin");
+    fs::write(&big, &data).unwrap();
+
+    let dest = tmp.path().join("out.7z");
+    let opts = CompressOptions {
+        volume: Some("32k"),
+        ..Default::default()
+    };
+    compress_with_opts(&[big.as_path()], &dest, &opts, &CancelToken::new(), &NullSink).unwrap();
+
+    assert!(dest.with_extension("7z.001").exists(), "volume .001 harus ada");
+    assert!(dest.with_extension("7z.002").exists(), "volume .002 harus ada");
+}
+
+#[test]
+fn list_with_encoding_utf8_is_noop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let zip = tmp.path().join("e.zip");
+    compress(&refs, &zip, None, &CancelToken::new(), &NullSink).unwrap();
+
+    let a = list(&zip, None).unwrap();
+    let b = list_with_encoding(&zip, None, NameEncoding::Utf8).unwrap();
+    let names_a: Vec<_> = a.iter().map(|e| &e.name).collect();
+    let names_b: Vec<_> = b.iter().map(|e| &e.name).collect();
+    assert_eq!(names_a, names_b);
+}
+
+#[test]
 fn roundtrip_tar() {
     roundtrip("tar");
 }

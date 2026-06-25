@@ -289,6 +289,7 @@ pub fn build_ui(app: &adw::Application) {
     app.set_accels_for_action("win.find", &["F3"]);
     app.set_accels_for_action("win.delete", &["Delete"]);
     app.set_accels_for_action("win.open", &["<Ctrl>o"]);
+    app.set_accels_for_action("win.encoding", &["<Ctrl>e"]);
 
     window.present();
 
@@ -337,6 +338,8 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     add_action(&group, "invert_sel", ui, invert_selection);
     add_action(&group, "report", ui, generate_report);
     add_action(&group, "log", ui, show_log);
+    add_action(&group, "encoding", ui, choose_encoding_dialog);
+    add_action(&group, "profiles", ui, show_profiles_manager);
     add_action(&group, "add", ui, compress_dialog);
     add_action(&group, "extract", ui, extract_dialog);
     add_action(&group, "test", ui, test_dialog);
@@ -419,6 +422,8 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
 
     let options = gio::Menu::new();
     options.append(Some("Preferensi…"), Some("win.options"));
+    options.append(Some("Profil Kompresi…"), Some("win.profiles"));
+    options.append(Some("Penyandian Nama…"), Some("win.encoding"));
     options.append(Some("Lihat Log…"), Some("win.log"));
     menu.append_submenu(Some("Options"), &options);
 
@@ -835,10 +840,11 @@ fn open_dialog(ui: &Rc<Ui>) {
 
 fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
     ui.status.set_text(&format!("Membaca {}…", path.display()));
+    let encoding = ui.config.borrow().name_encoding;
     let (tx, rx) = async_channel::bounded(1);
     let worker_path = path.clone();
     std::thread::spawn(move || {
-        let res = zippy_core::archive::list(&worker_path, None);
+        let res = zippy_core::archive::list_with_encoding(&worker_path, None, encoding);
         // Peringatan enkripsi lemah hanya relevan bila list sukses.
         let weak = res.is_ok()
             && zippy_core::archive::has_weak_encryption(&worker_path).unwrap_or(false);
@@ -1336,10 +1342,21 @@ fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
     let kind = zippy_core::archive::kind_from_ext(&dest);
     let supports_pw = matches!(kind, Some(ArchiveKind::Zip | ArchiveKind::SevenZip));
     let supports_level = !matches!(kind, Some(ArchiveKind::Tar));
+    let is_7z = matches!(kind, Some(ArchiveKind::SevenZip));
+    let is_tar = matches!(
+        kind,
+        Some(
+            ArchiveKind::Tar
+                | ArchiveKind::TarGz
+                | ArchiveKind::TarBz2
+                | ArchiveKind::TarXz
+                | ArchiveKind::TarZst
+        )
+    );
 
     // Plain tar: tak ada yang bisa diatur → langsung kompres.
     if !supports_pw && !supports_level {
-        run_compress(ui, inputs, dest, Level::default(), None, false);
+        run_compress(ui, inputs, dest, Level::default(), None, false, None, false);
         return;
     }
 
@@ -1355,6 +1372,30 @@ fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
         content.append(&row);
     }
 
+    // Profil kompresi: pilih untuk menerapkan level tersimpan.
+    let profiles = ui.config.borrow().profiles.clone();
+    if supports_level && !profiles.is_empty() {
+        let mut labels = vec!["(Custom)".to_string()];
+        labels.extend(profiles.iter().map(|(n, _)| n.clone()));
+        let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        let prof_dd = gtk::DropDown::from_strings(&label_refs);
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.append(&gtk::Label::new(Some("Profil:")));
+        prof_dd.set_hexpand(true);
+        row.append(&prof_dd);
+        content.append(&row);
+        let level_dd = level_dropdown.clone();
+        let profs = profiles.clone();
+        prof_dd.connect_selected_notify(move |dd| {
+            let i = dd.selected() as usize;
+            if i >= 1 {
+                if let Some((_, lvl)) = profs.get(i - 1) {
+                    level_dd.set_selected(index_from_level(*lvl));
+                }
+            }
+        });
+    }
+
     let pw_entry = gtk::PasswordEntry::builder()
         .show_peek_icon(true)
         .activates_default(true)
@@ -1362,6 +1403,19 @@ fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
     if supports_pw {
         pw_entry.set_placeholder_text(Some("Password AES-256 (opsional)"));
         content.append(&pw_entry);
+    }
+
+    // Split ke volume (7z): ukuran seperti "100m", "700m", "4g".
+    let vol_entry = gtk::Entry::new();
+    if is_7z {
+        vol_entry.set_placeholder_text(Some("Split ukuran volume mis. 100m (opsional)"));
+        content.append(&vol_entry);
+    }
+
+    // Simpan symlink sebagai link (tar).
+    let sym_check = gtk::CheckButton::with_label("Simpan symlink sebagai link (bukan isinya)");
+    if is_tar {
+        content.append(&sym_check);
     }
 
     let del_check = gtk::CheckButton::with_label("Hapus berkas sumber setelah arsip dibuat");
@@ -1391,11 +1445,28 @@ fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
         } else {
             None
         };
-        run_compress(&ui, inputs.clone(), dest.clone(), level, pw, del_check.is_active());
+        let volume = if is_7z {
+            let t = vol_entry.text().trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        } else {
+            None
+        };
+        let symlinks = is_tar && sym_check.is_active();
+        run_compress(
+            &ui,
+            inputs.clone(),
+            dest.clone(),
+            level,
+            pw,
+            del_check.is_active(),
+            volume,
+            symlinks,
+        );
     });
     dialog.present();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_compress(
     ui: &Rc<Ui>,
     inputs: Vec<PathBuf>,
@@ -1403,6 +1474,8 @@ fn run_compress(
     level: Level,
     password: Option<String>,
     delete_after: bool,
+    volume: Option<String>,
+    symlinks_as_links: bool,
 ) {
     let cancel = CancelToken::new();
     *ui.cancel.borrow_mut() = Some(cancel.clone());
@@ -1415,14 +1488,13 @@ fn run_compress(
         let res = {
             let sink = ChannelSink::new(tx_ev);
             let refs: Vec<&Path> = inputs.iter().map(|p| p.as_path()).collect();
-            zippy_core::archive::compress_with_level(
-                &refs,
-                &dest,
-                password.as_deref(),
+            let opts = zippy_core::CompressOptions {
+                password: password.as_deref(),
                 level,
-                &cancel,
-                &sink,
-            )
+                volume: volume.as_deref(),
+                symlinks_as_links,
+            };
+            zippy_core::archive::compress_with_opts(&refs, &dest, &opts, &cancel, &sink)
         };
         let _ = tx_done.send_blocking(res);
     });
@@ -2970,9 +3042,194 @@ fn show_preferences(ui: &Rc<Ui>) {
     });
     group.add(&proh_row);
 
+    // Penyandian nama berkas (ZIP legasi).
+    let enc_row = adw::ComboRow::builder()
+        .title("Penyandian nama (ZIP legasi)")
+        .subtitle("Untuk arsip lama dengan nama non-UTF8")
+        .build();
+    let enc_labels: Vec<&str> = config::ENCODINGS.iter().map(|(l, _)| *l).collect();
+    enc_row.set_model(Some(&gtk::StringList::new(&enc_labels)));
+    let cur_enc = ui.config.borrow().name_encoding;
+    enc_row.set_selected(
+        config::ENCODINGS
+            .iter()
+            .position(|(_, e)| *e == cur_enc)
+            .unwrap_or(0) as u32,
+    );
+    enc_row.connect_selected_notify({
+        let ui = ui.clone();
+        move |r| {
+            let enc = config::ENCODINGS
+                .get(r.selected() as usize)
+                .map(|(_, e)| *e)
+                .unwrap_or_default();
+            {
+                let mut c = ui.config.borrow_mut();
+                c.name_encoding = enc;
+                c.save();
+            }
+            // Muat ulang arsip aktif agar nama mencerminkan encoding baru.
+            if let Some(p) = ui.current.borrow().clone() {
+                load_archive(&ui, p);
+            }
+        }
+    });
+    group.add(&enc_row);
+
+    // Profil kompresi (buka manager).
+    let prof_row = adw::ActionRow::builder()
+        .title("Profil kompresi")
+        .subtitle("Simpan preset level untuk dialog Add")
+        .activatable(true)
+        .build();
+    prof_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    prof_row.connect_activated({
+        let ui = ui.clone();
+        move |_| show_profiles_manager(&ui)
+    });
+    group.add(&prof_row);
+
     page.add(&group);
     win.add(&page);
     win.present();
+}
+
+/// Manager profil kompresi: tambah (nama + level) & hapus.
+fn show_profiles_manager(ui: &Rc<Ui>) {
+    let win = adw::PreferencesWindow::builder()
+        .transient_for(&ui.window)
+        .modal(true)
+        .title("Profil Kompresi")
+        .search_enabled(false)
+        .build();
+    win.set_default_size(420, 360);
+    let page = adw::PreferencesPage::new();
+
+    // Grup: tambah profil baru.
+    let add_group = adw::PreferencesGroup::builder().title("Tambah Profil").build();
+    let name_row = adw::EntryRow::builder().title("Nama profil").build();
+    let level_row = adw::ComboRow::builder().title("Tingkat").build();
+    level_row.set_model(Some(&gtk::StringList::new(&LEVEL_LABELS)));
+    level_row.set_selected(2);
+    let add_btn = gtk::Button::builder()
+        .label("Tambah")
+        .halign(gtk::Align::End)
+        .build();
+    add_btn.add_css_class("suggested-action");
+    add_group.add(&name_row);
+    add_group.add(&level_row);
+    add_group.add(&add_btn);
+    page.add(&add_group);
+
+    // Grup: daftar profil tersimpan.
+    let list_group = adw::PreferencesGroup::builder().title("Tersimpan").build();
+    page.add(&list_group);
+
+    let refresh = {
+        let ui = ui.clone();
+        let list_group = list_group.clone();
+        Rc::new(move || {
+            // Bersihkan baris lama.
+            while let Some(child) = list_group.first_child() {
+                list_group.remove(&child);
+            }
+            for (name, level) in ui.config.borrow().profiles.clone() {
+                let row = adw::ActionRow::builder()
+                    .title(&name)
+                    .subtitle(LEVEL_LABELS[index_from_level(level) as usize])
+                    .build();
+                let del = gtk::Button::builder()
+                    .icon_name("user-trash-symbolic")
+                    .valign(gtk::Align::Center)
+                    .build();
+                del.add_css_class("flat");
+                del.connect_clicked({
+                    let ui = ui.clone();
+                    let name = name.clone();
+                    let lg = list_group.clone();
+                    let row = row.clone();
+                    move |_| {
+                        let mut c = ui.config.borrow_mut();
+                        c.profiles.retain(|(n, _)| n != &name);
+                        c.save();
+                        drop(c);
+                        lg.remove(&row);
+                    }
+                });
+                row.add_suffix(&del);
+                list_group.add(&row);
+            }
+        })
+    };
+    refresh();
+
+    add_btn.connect_clicked({
+        let ui = ui.clone();
+        let name_row = name_row.clone();
+        let level_row = level_row.clone();
+        let refresh = refresh.clone();
+        move |_| {
+            let name = name_row.text().trim().to_string();
+            if name.is_empty() || name.contains('=') || name.contains('.') {
+                show_toast(&ui, "Nama profil tidak valid (tanpa '.' atau '=')");
+                return;
+            }
+            let level = level_from_index(level_row.selected());
+            {
+                let mut c = ui.config.borrow_mut();
+                c.profiles.retain(|(n, _)| n != &name);
+                c.profiles.push((name.clone(), level));
+                c.save();
+            }
+            name_row.set_text("");
+            refresh();
+        }
+    });
+
+    win.add(&page);
+    win.present();
+}
+
+/// Options → Penyandian Nama (Ctrl+E): pilih encoding & muat ulang arsip aktif.
+fn choose_encoding_dialog(ui: &Rc<Ui>) {
+    let labels: Vec<&str> = config::ENCODINGS.iter().map(|(l, _)| *l).collect();
+    let dd = gtk::DropDown::from_strings(&labels);
+    let cur = ui.config.borrow().name_encoding;
+    dd.set_selected(
+        config::ENCODINGS
+            .iter()
+            .position(|(_, e)| *e == cur)
+            .unwrap_or(0) as u32,
+    );
+    let dialog = adw::MessageDialog::new(
+        Some(&ui.window),
+        Some("Penyandian Nama"),
+        Some("Untuk arsip ZIP lama dengan nama non-UTF8."),
+    );
+    dialog.set_extra_child(Some(&icon_with("zippy-info", &dd)));
+    dialog.add_response("cancel", "Batal");
+    dialog.add_response("ok", "Terapkan");
+    dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("ok"));
+    let ui = ui.clone();
+    dialog.connect_response(None, move |_, resp| {
+        if resp != "ok" {
+            return;
+        }
+        let enc = config::ENCODINGS
+            .get(dd.selected() as usize)
+            .map(|(_, e)| *e)
+            .unwrap_or_default();
+        {
+            let mut c = ui.config.borrow_mut();
+            c.name_encoding = enc;
+            c.save();
+        }
+        if let Some(p) = ui.current.borrow().clone() {
+            load_archive(&ui, p);
+        }
+    });
+    dialog.present();
 }
 
 // ---------------------------------------------------------------------------

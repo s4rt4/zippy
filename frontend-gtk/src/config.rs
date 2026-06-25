@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use zippy_core::Level;
+use zippy_core::{Level, NameEncoding};
 
 /// Skema warna libadwaita yang dipilih user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +45,10 @@ pub struct Config {
     pub prohibited: Vec<String>,
     /// Pindahkan arsip ke Trash setelah extract sukses (WinRAR "Delete archive").
     pub delete_after_extract: bool,
+    /// Penyandian nama berkas untuk ZIP legasi (WinRAR "Name encoding").
+    pub name_encoding: NameEncoding,
+    /// Profil kompresi tersimpan: `(nama, level)`.
+    pub profiles: Vec<(String, Level)>,
 }
 
 impl Default for Config {
@@ -55,7 +59,44 @@ impl Default for Config {
             confirm_delete: true,
             prohibited: Vec::new(),
             delete_after_extract: false,
+            name_encoding: NameEncoding::Utf8,
+            profiles: Vec::new(),
         }
+    }
+}
+
+/// Daftar (label UI, nilai) penyandian nama — dipakai config & ComboRow.
+pub const ENCODINGS: &[(&str, NameEncoding)] = &[
+    ("UTF-8 (default)", NameEncoding::Utf8),
+    ("Western (Windows-1252)", NameEncoding::Windows1252),
+    ("Cyrillic (Windows-1251)", NameEncoding::Windows1251),
+    ("Japanese (Shift-JIS)", NameEncoding::ShiftJis),
+    ("Simplified Chinese (GBK)", NameEncoding::Gbk),
+    ("Traditional Chinese (Big5)", NameEncoding::Big5),
+    ("Korean (EUC-KR)", NameEncoding::EucKr),
+];
+
+fn enc_str(e: NameEncoding) -> &'static str {
+    match e {
+        NameEncoding::Utf8 => "utf8",
+        NameEncoding::Windows1252 => "windows-1252",
+        NameEncoding::Windows1251 => "windows-1251",
+        NameEncoding::ShiftJis => "shift-jis",
+        NameEncoding::Gbk => "gbk",
+        NameEncoding::Big5 => "big5",
+        NameEncoding::EucKr => "euc-kr",
+    }
+}
+
+fn enc_parse(s: &str) -> NameEncoding {
+    match s {
+        "windows-1252" => NameEncoding::Windows1252,
+        "windows-1251" => NameEncoding::Windows1251,
+        "shift-jis" => NameEncoding::ShiftJis,
+        "gbk" => NameEncoding::Gbk,
+        "big5" => NameEncoding::Big5,
+        "euc-kr" => NameEncoding::EucKr,
+        _ => NameEncoding::Utf8,
     }
 }
 
@@ -126,6 +167,13 @@ impl Config {
                     "confirm_delete" => c.confirm_delete = v != "false",
                     "prohibited" => c.prohibited = parse_prohibited(v),
                     "delete_after_extract" => c.delete_after_extract = v == "true",
+                    "name_encoding" => c.name_encoding = enc_parse(v),
+                    k if k.starts_with("profile.") => {
+                        let name = k.trim_start_matches("profile.").trim();
+                        if !name.is_empty() {
+                            c.profiles.push((name.to_string(), level_parse(v)));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -135,14 +183,18 @@ impl Config {
 
     pub fn save(&self) {
         let _ = fs::create_dir_all(config_dir());
-        let body = format!(
-            "compression_level={}\ncolor_scheme={}\nconfirm_delete={}\nprohibited={}\ndelete_after_extract={}\n",
+        let mut body = format!(
+            "compression_level={}\ncolor_scheme={}\nconfirm_delete={}\nprohibited={}\ndelete_after_extract={}\nname_encoding={}\n",
             level_str(self.level),
             self.scheme.as_str(),
             self.confirm_delete,
             self.prohibited.join(" "),
             self.delete_after_extract,
+            enc_str(self.name_encoding),
         );
+        for (name, level) in &self.profiles {
+            body.push_str(&format!("profile.{name}={}\n", level_str(*level)));
+        }
         let _ = fs::write(config_file(), body);
     }
 }

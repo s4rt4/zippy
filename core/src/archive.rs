@@ -194,6 +194,18 @@ impl OverwriteMode {
     }
 }
 
+/// Opsi pembuatan arsip (di luar level dasar). Field yang tidak relevan dengan
+/// format tujuan diabaikan.
+#[derive(Clone, Copy, Default)]
+pub struct CompressOptions<'a> {
+    pub password: Option<&'a str>,
+    pub level: Level,
+    /// Ukuran volume split (mis. `"100m"`, `"4g"`). Hanya 7z. `None` = tunggal.
+    pub volume: Option<&'a str>,
+    /// Simpan symlink sebagai link (bukan mengikuti isinya). Hanya TAR.
+    pub symlinks_as_links: bool,
+}
+
 impl ArchiveKind {
     fn is_tar_family(self) -> bool {
         matches!(
@@ -294,11 +306,57 @@ pub fn kind_from_ext(path: &Path) -> Option<ArchiveKind> {
 // List
 // ---------------------------------------------------------------------------
 
+/// Penyandian nama berkas untuk ZIP legasi (non-UTF8). Padanan "Name encoding"
+/// WinRAR. `encoding_rs` (WHATWG) tidak menyertakan CP437/DOS, tapi mencakup
+/// kasus mojibake CJK yang paling umum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NameEncoding {
+    /// UTF-8 / apa adanya (default).
+    #[default]
+    Utf8,
+    /// Western (Windows-1252).
+    Windows1252,
+    /// Cyrillic (Windows-1251).
+    Windows1251,
+    /// Japanese (Shift-JIS).
+    ShiftJis,
+    /// Simplified Chinese (GBK).
+    Gbk,
+    /// Traditional Chinese (Big5).
+    Big5,
+    /// Korean (EUC-KR).
+    EucKr,
+}
+
+impl NameEncoding {
+    fn encoding(self) -> Option<&'static encoding_rs::Encoding> {
+        match self {
+            NameEncoding::Utf8 => None,
+            NameEncoding::Windows1252 => Some(encoding_rs::WINDOWS_1252),
+            NameEncoding::Windows1251 => Some(encoding_rs::WINDOWS_1251),
+            NameEncoding::ShiftJis => Some(encoding_rs::SHIFT_JIS),
+            NameEncoding::Gbk => Some(encoding_rs::GBK),
+            NameEncoding::Big5 => Some(encoding_rs::BIG5),
+            NameEncoding::EucKr => Some(encoding_rs::EUC_KR),
+        }
+    }
+}
+
 /// Daftar isi archive tanpa meng-extract.
 pub fn list(archive: &Path, password: Option<&str>) -> Result<Vec<Entry>> {
+    list_with_encoding(archive, password, NameEncoding::Utf8)
+}
+
+/// Seperti [`list`] tetapi menafsirkan nama entri ZIP dengan `encoding`
+/// (untuk arsip legasi non-UTF8). Encoding diabaikan untuk format selain ZIP.
+pub fn list_with_encoding(
+    archive: &Path,
+    password: Option<&str>,
+    encoding: NameEncoding,
+) -> Result<Vec<Entry>> {
     let kind = detect_kind(archive)?;
     match kind {
-        ArchiveKind::Zip => list_zip(archive),
+        ArchiveKind::Zip => list_zip(archive, encoding),
         k if k.is_tar_family() => {
             let reader = open_tar_reader(archive, k)?;
             extract::list_tar(reader)
@@ -597,16 +655,39 @@ pub fn compress_with_level(
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
+    compress_with_opts(
+        inputs,
+        dest,
+        &CompressOptions {
+            password,
+            level,
+            ..Default::default()
+        },
+        cancel,
+        progress,
+    )
+}
+
+/// Buat arsip dengan [`CompressOptions`] penuh (level + split volume + symlink).
+pub fn compress_with_opts(
+    inputs: &[&Path],
+    dest: &Path,
+    opts: &CompressOptions,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
     let kind = kind_from_ext(dest).ok_or(Error::UnsupportedFormat)?;
     let res = match kind {
-        ArchiveKind::Zip => compress_zip(inputs, dest, password, level, cancel, progress),
-        k if k.is_tar_family() => compress_tar(inputs, dest, k, level, cancel, progress),
+        ArchiveKind::Zip => compress_zip(inputs, dest, opts.password, opts.level, cancel, progress),
+        k if k.is_tar_family() => {
+            compress_tar(inputs, dest, k, opts.level, opts.symlinks_as_links, cancel, progress)
+        }
         ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
-            compress_single(inputs, dest, kind, level, cancel, progress)
+            compress_single(inputs, dest, kind, opts.level, cancel, progress)
         }
-        ArchiveKind::SevenZip => {
-            subprocess::sevenzip_compress(inputs, dest, password, level, cancel, progress)
-        }
+        ArchiveKind::SevenZip => subprocess::sevenzip_compress(
+            inputs, dest, opts.password, opts.level, opts.volume, cancel, progress,
+        ),
         ArchiveKind::Rar => Err(Error::Other("RAR compress tidak didukung (extract only)".into())),
         _ => Err(Error::UnsupportedFormat),
     };
@@ -614,6 +695,15 @@ pub fn compress_with_level(
         // Best-effort: buang archive parsial. (Untuk 7z, file dibuat oleh child
         // process; tetap kita coba hapus.)
         let _ = fs::remove_file(dest);
+        // 7z volume → file bisa `dest.001`, `dest.002`, … bersihkan juga.
+        if kind == ArchiveKind::SevenZip && opts.volume.is_some() {
+            for i in 1..=999 {
+                let part = dest.with_extension(format!("7z.{i:03}"));
+                if fs::remove_file(&part).is_err() {
+                    break;
+                }
+            }
+        }
     }
     res
 }
@@ -1192,7 +1282,7 @@ pub fn has_weak_encryption(archive: &Path) -> Result<bool> {
 // ZIP backend (native)
 // ---------------------------------------------------------------------------
 
-fn list_zip(archive: &Path) -> Result<Vec<Entry>> {
+fn list_zip(archive: &Path, encoding: NameEncoding) -> Result<Vec<Entry>> {
     let f = File::open(archive)?;
     let mut ar = zip::ZipArchive::new(BufReader::new(f)).map_err(zip_err)?;
     let mut out = Vec::with_capacity(ar.len());
@@ -1209,9 +1299,14 @@ fn list_zip(archive: &Path) -> Result<Vec<Entry>> {
                 d.minute()
             )
         });
+        // Override penyandian nama untuk arsip legasi (non-UTF8).
+        let name = match encoding.encoding() {
+            Some(enc) => enc.decode(e.name_raw()).0.into_owned(),
+            None => e.name().to_string(),
+        };
         let is_dir = e.is_dir();
         out.push(Entry {
-            name: e.name().to_string(),
+            name,
             size: e.size(),
             compressed_size: e.compressed_size(),
             is_dir,
@@ -1380,6 +1475,7 @@ fn compress_tar(
     dest: &Path,
     kind: ArchiveKind,
     level: Level,
+    symlinks_as_links: bool,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -1392,31 +1488,31 @@ fn compress_tar(
     match kind {
         ArchiveKind::Tar => {
             let mut b = tar::Builder::new(w);
-            write_tar_entries(&mut b, inputs, cancel, progress)?;
+            write_tar_entries(&mut b, inputs, symlinks_as_links, cancel, progress)?;
             b.finish()?;
         }
         ArchiveKind::TarGz => {
             let enc = GzEncoder::new(w, level.flate2());
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs, cancel, progress)?;
+            write_tar_entries(&mut b, inputs, symlinks_as_links, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarBz2 => {
             let enc = bzip2::write::BzEncoder::new(w, level.bzip2());
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs, cancel, progress)?;
+            write_tar_entries(&mut b, inputs, symlinks_as_links, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarXz => {
             let enc = xz2::write::XzEncoder::new(w, level.xz());
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs, cancel, progress)?;
+            write_tar_entries(&mut b, inputs, symlinks_as_links, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         ArchiveKind::TarZst => {
             let enc = zstd::stream::write::Encoder::new(w, level.zstd())?;
             let mut b = tar::Builder::new(enc);
-            write_tar_entries(&mut b, inputs, cancel, progress)?;
+            write_tar_entries(&mut b, inputs, symlinks_as_links, cancel, progress)?;
             b.into_inner()?.finish()?;
         }
         _ => return Err(Error::UnsupportedFormat),
@@ -1434,25 +1530,32 @@ fn compress_tar(
 fn write_tar_entries<W: Write>(
     builder: &mut tar::Builder<W>,
     inputs: &[&Path],
+    symlinks_as_links: bool,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
+    // `follow_symlinks(false)` → simpan symlink sebagai entri link; default
+    // (true) → ikuti & simpan isi targetnya.
+    builder.follow_symlinks(!symlinks_as_links);
+    let follow = !symlinks_as_links;
     let mut index = 0;
     for input in inputs {
         let name = input
             .file_name()
             .ok_or_else(|| Error::Other(format!("input tanpa nama: {}", input.display())))?;
-        add_tar_entry(builder, input, Path::new(name), cancel, progress, &mut index)?;
+        add_tar_entry(builder, input, Path::new(name), follow, cancel, progress, &mut index)?;
     }
     Ok(())
 }
 
-/// Tambah satu path (file atau dir) ke tar di bawah nama `arc`, rekursif untuk
-/// direktori. `index` naik tiap berkas (bukan direktori).
+/// Tambah satu path (file/dir/symlink) ke tar di bawah nama `arc`, rekursif
+/// untuk direktori. Bila `follow` palsu, symlink-ke-dir tidak di-rekursi
+/// (disimpan sebagai entri link). `index` naik tiap berkas (bukan direktori).
 fn add_tar_entry<W: Write>(
     builder: &mut tar::Builder<W>,
     disk: &Path,
     arc: &Path,
+    follow: bool,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
     index: &mut usize,
@@ -1461,11 +1564,18 @@ fn add_tar_entry<W: Write>(
     // `append_path_with_name` menambah entry dir (header saja) atau file+isi.
     builder.append_path_with_name(disk, arc)?;
 
-    if disk.is_dir() {
+    // Saat tidak mengikuti symlink, gunakan metadata-symlink agar symlink-ke-dir
+    // tidak ikut di-rekursi (sudah tersimpan sebagai entri link di atas).
+    let is_dir = if follow {
+        disk.is_dir()
+    } else {
+        fs::symlink_metadata(disk).map(|m| m.is_dir()).unwrap_or(false)
+    };
+    if is_dir {
         let mut entries: Vec<_> = fs::read_dir(disk)?.filter_map(|e| e.ok()).collect();
         entries.sort_by_key(|e| e.path());
         for e in entries {
-            add_tar_entry(builder, &e.path(), &arc.join(e.file_name()), cancel, progress, index)?;
+            add_tar_entry(builder, &e.path(), &arc.join(e.file_name()), follow, cancel, progress, index)?;
         }
     } else {
         progress.emit(ProgressEvent::FileProcessed {
