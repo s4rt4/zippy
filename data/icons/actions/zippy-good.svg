@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 105.28 104.26">
+  <!-- Generator: Adobe Illustrator 30.0.0, SVG Export Plug-In . SVG Version: 2.1.1 Build 123)  -->
+  <defs>
+    <style>
+      .st0 {
+        fill: url(#New_Gradient_Swatch_1);
+        stroke: #103a73;
+        stroke-width: 2.4px;
+      }
+
+      .st1 {
+        fill: #f9f06b;
+        stroke: #9c6e00;
+        stroke-width: 1.87px;
+      }
+    </style>
+    <linearGradient id="New_Gradient_Swatch_1" data-name="New Gradient Swatch 1" x1="4.64" y1="52.13" x2="100.64" y2="52.13" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1a5fb4"/>
+    </linearGradient>
+  </defs>
+  <circle class="st0" cx="52.64" cy="52.13" r="48"/>
+  <path class="st1" d="M40.1,77.02l-20.91-25.99c-1.73-2.15-1.39-5.3.76-7.03,2.15-1.73,5.3-1.39,7.03.76l14.83,18.44,40.81-30.78c2.21-1.66,5.34-1.22,7,.98,1.66,2.2,1.22,5.34-.98,7l-48.55,36.62Z"/>
+</svg>

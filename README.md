@@ -17,8 +17,17 @@ berfungsi & teruji**. Frontend GTK4 masih window kosong (v0.2).
 | RAR | ✓ | ✓ | — | subprocess `unrar` (extract only) |
 
 Semua jalur extract melewati guard **Zip Slip** + **zip bomb**. Deteksi format
-berbasis **magic bytes** (berlapis untuk `.tar.*`). 48 test hijau — 36 unit/
+berbasis **magic bytes** (berlapis untuk `.tar.*`). 52 test hijau — 40 unit/
 round-trip + 9 interop + 3 robustness (`cargo test -p zippy-core`).
+
+### Perkakas tambahan (gaya WinRAR)
+
+| Fitur | Backend | Catatan |
+|-------|---------|---------|
+| Pindai virus | `clamdscan`/`clamscan` (ClamAV) | opsional — tombol melapor bila tak terpasang |
+| Perbaiki arsip | `zip -FF` (ZIP) / `par2 repair` (sidecar `.par2`) | padanan Linux untuk recovery-record RAR |
+
+Pemetaan lengkap fitur WinRAR → kelayakan di Linux: [`docs/winrar-feature-map.md`](docs/winrar-feature-map.md).
 
 ## Arsitektur
 
@@ -47,9 +56,11 @@ cargo test -p zippy-core
 ```sh
 # Fedora 43
 sudo dnf install p7zip p7zip-plugins unrar gtk4-devel python3-nautilus
+sudo dnf install clamav par2cmdline zip          # opsional: scan virus + repair
 
 # Debian / Ubuntu
 sudo apt install p7zip-full unrar libgtk-4-dev python3-nautilus
+sudo apt install clamav par2 zip                 # opsional: scan virus + repair
 ```
 
 ## Sprint 0 — mengukur baseline

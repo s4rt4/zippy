@@ -15,12 +15,16 @@ pub mod formats;
 pub mod progress;
 pub mod safety;
 pub mod subprocess;
+pub mod tools;
 
 pub use archive::{ArchiveKind, Entry, Level};
 pub use cancel::CancelToken;
 pub use error::{Error, Result};
 pub use formats::Format;
 pub use progress::{NullSink, ProgressEvent, ProgressSink};
+pub use tools::{
+    par2_available, repair, scan, virus_scanner, RepairReport, ScanFinding, ScanReport,
+};
 
 /// Versi crate core, diekspos untuk ditampilkan di UI / `zippy --version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

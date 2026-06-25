@@ -30,6 +30,36 @@ const APP_ICON: &str = "io.github.s4rt4.Zippy";
 const APP_ICON_SVG: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/icons/io.github.s4rt4.Zippy.svg"));
 
+/// Ikon aksi toolbar (gaya WinRAR berwarna) yang di-embed + ditulis ke icon
+/// theme cache oleh [`setup_icon_theme`]. Tuple `(nama-themed, isi-svg)`.
+macro_rules! action_icon {
+    ($name:literal) => {
+        (
+            $name,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../data/icons/actions/",
+                $name,
+                ".svg"
+            )) as &[u8],
+        )
+    };
+}
+const ACTION_ICONS: &[(&str, &[u8])] = &[
+    action_icon!("zippy-add"),
+    action_icon!("zippy-extract"),
+    action_icon!("zippy-test"),
+    action_icon!("zippy-view"),
+    action_icon!("zippy-delete"),
+    action_icon!("zippy-find"),
+    action_icon!("zippy-wizard"),
+    action_icon!("zippy-info"),
+    action_icon!("zippy-repair"),
+    action_icon!("zippy-scan"),
+    action_icon!("zippy-good"),
+    action_icon!("zippy-bad"),
+];
+
 /// Handle widget yang dibagi antar-callback selama window hidup.
 struct Ui {
     window: gtk::ApplicationWindow,
@@ -113,7 +143,7 @@ pub fn build_ui(app: &adw::Application) {
         .build();
 
     // Toolbar: tombol Extract perlu referensi untuk enable/disable.
-    let extract_btn = tool_button("archive-extract", "Extract To");
+    let extract_btn = tool_button("zippy-extract", "Extract To");
 
     // Search bar (Find): tersembunyi sampai diaktifkan tombol/menu Find.
     let search_entry = gtk::SearchEntry::builder()
@@ -292,6 +322,8 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     add_action(&group, "delete", ui, delete_selected);
     add_action(&group, "find", ui, toggle_search);
     add_action(&group, "wizard", ui, show_wizard);
+    add_action(&group, "repair", ui, repair_dialog);
+    add_action(&group, "scan", ui, scan_dialog);
     add_action(&group, "options", ui, show_preferences);
     add_action(&group, "about", ui, show_about);
     // Favorit: tambah/hapus arsip saat ini, kelola, dan buka (berparameter).
@@ -337,6 +369,8 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
 
     let tools = gio::Menu::new();
     tools.append(Some("Wizard"), Some("win.wizard"));
+    tools.append(Some("Pindai Virus…"), Some("win.scan"));
+    tools.append(Some("Perbaiki Arsip…"), Some("win.repair"));
     tools.append(Some("Cari…"), Some("win.find"));
     menu.append_submenu(Some("Tools"), &tools);
 
@@ -500,7 +534,7 @@ fn build_toolbar(ui: &Rc<Ui>, extract_btn: &gtk::Button) -> gtk::Box {
     bar.set_margin_top(4);
     bar.set_margin_bottom(4);
 
-    let add = tool_button("add-files-to-archive", "Add");
+    let add = tool_button("zippy-add", "Add");
     add.connect_clicked({
         let ui = ui.clone();
         move |_| compress_dialog(&ui)
@@ -511,32 +545,42 @@ fn build_toolbar(ui: &Rc<Ui>, extract_btn: &gtk::Button) -> gtk::Box {
     });
     extract_btn.set_sensitive(false);
 
-    let test = tool_button("dialog-ok-apply", "Test");
+    let test = tool_button("zippy-test", "Test");
     test.connect_clicked({
         let ui = ui.clone();
         move |_| test_dialog(&ui)
     });
-    let view = tool_button("document-preview-archive", "View");
+    let view = tool_button("zippy-view", "View");
     view.connect_clicked({
         let ui = ui.clone();
         move |_| view_selected(&ui)
     });
-    let delete = tool_button("archive-remove", "Delete");
+    let delete = tool_button("zippy-delete", "Delete");
     delete.connect_clicked({
         let ui = ui.clone();
         move |_| delete_selected(&ui)
     });
-    let find = tool_button("edit-find", "Find");
+    let find = tool_button("zippy-find", "Find");
     find.connect_clicked({
         let ui = ui.clone();
         move |_| toggle_search(&ui)
     });
-    let wizard = tool_button("tools-wizard", "Wizard");
+    let repair = tool_button("zippy-repair", "Repair");
+    repair.connect_clicked({
+        let ui = ui.clone();
+        move |_| repair_dialog(&ui)
+    });
+    let scan = tool_button("zippy-scan", "Scan");
+    scan.connect_clicked({
+        let ui = ui.clone();
+        move |_| scan_dialog(&ui)
+    });
+    let wizard = tool_button("zippy-wizard", "Wizard");
     wizard.connect_clicked({
         let ui = ui.clone();
-        move |_| show_toast(&ui, "Wizard belum didukung")
+        move |_| show_wizard(&ui)
     });
-    let info = tool_button("dialog-information", "Info");
+    let info = tool_button("zippy-info", "Info");
     info.connect_clicked({
         let ui = ui.clone();
         move |_| show_about(&ui)
@@ -548,6 +592,8 @@ fn build_toolbar(ui: &Rc<Ui>, extract_btn: &gtk::Button) -> gtk::Box {
     bar.append(&view);
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     bar.append(&delete);
+    bar.append(&repair);
+    bar.append(&scan);
     bar.append(&find);
     bar.append(&wizard);
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
@@ -1259,6 +1305,163 @@ fn run_test(ui: &Rc<Ui>, archive: PathBuf, password: Option<String>) {
 }
 
 // ---------------------------------------------------------------------------
+// Repair archive (zip -FF / sidecar PAR2)
+// ---------------------------------------------------------------------------
+
+fn repair_dialog(ui: &Rc<Ui>) {
+    match ui.current.borrow().clone() {
+        Some(archive) => run_repair(ui, archive),
+        None => show_toast(ui, "Belum ada archive terbuka"),
+    }
+}
+
+fn run_repair(ui: &Rc<Ui>, archive: PathBuf) {
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+
+    let (tx_done, rx_done) = async_channel::bounded(1);
+    let worker = archive.clone();
+    std::thread::spawn(move || {
+        let _ = tx_done.send_blocking(zippy_core::repair(&worker, &cancel));
+    });
+
+    let pulse = start_pulse(ui, "Memperbaiki arsip…");
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let res = rx_done.recv().await;
+        stop_pulse(&ui, &pulse);
+        match res {
+            Ok(Ok(rep)) => show_repair_result(&ui, &rep),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Perbaikan dibatalkan"),
+            Ok(Err(e)) => show_toast(&ui, &format!("Repair gagal: {e}")),
+            Err(_) => {}
+        }
+    });
+}
+
+fn show_repair_result(ui: &Rc<Ui>, rep: &zippy_core::RepairReport) {
+    let mut body = format!("Metode: {}\n", rep.method);
+    if let Some(p) = &rep.output_path {
+        body.push_str(&format!("Output: {}\n", p.display()));
+    }
+    body.push_str(if rep.repaired {
+        "\nStatus: berhasil ✓"
+    } else {
+        "\nStatus: tidak dapat diperbaiki sepenuhnya"
+    });
+    let heading = if rep.repaired {
+        "Perbaikan Berhasil"
+    } else {
+        "Perbaikan Tidak Tuntas"
+    };
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some(heading), Some(&body));
+    set_notif_icon(&dialog, rep.repaired);
+    dialog.add_response("ok", "Tutup");
+    dialog.present();
+}
+
+// ---------------------------------------------------------------------------
+// Scan virus (ClamAV)
+// ---------------------------------------------------------------------------
+
+fn scan_dialog(ui: &Rc<Ui>) {
+    if zippy_core::virus_scanner().is_none() {
+        show_toast(ui, "ClamAV tidak terpasang — pasang paket `clamav`");
+        return;
+    }
+    match ui.current.borrow().clone() {
+        Some(archive) => run_scan(ui, archive),
+        None => show_toast(ui, "Belum ada archive terbuka"),
+    }
+}
+
+fn run_scan(ui: &Rc<Ui>, archive: PathBuf) {
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+
+    let (tx_done, rx_done) = async_channel::bounded(1);
+    let worker = archive.clone();
+    std::thread::spawn(move || {
+        let _ = tx_done.send_blocking(zippy_core::scan(&worker, &cancel));
+    });
+
+    let pulse = start_pulse(ui, "Memindai virus…");
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let res = rx_done.recv().await;
+        stop_pulse(&ui, &pulse);
+        match res {
+            Ok(Ok(rep)) => show_scan_result(&ui, &rep),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Pemindaian dibatalkan"),
+            Ok(Err(e)) => show_toast(&ui, &format!("Scan gagal: {e}")),
+            Err(_) => {}
+        }
+    });
+}
+
+fn show_scan_result(ui: &Rc<Ui>, rep: &zippy_core::ScanReport) {
+    let clean = rep.is_clean();
+    let heading = if clean {
+        "Tidak Ada Virus"
+    } else {
+        "Virus Terdeteksi!"
+    };
+    let mut body = format!("Scanner: {}\n", rep.scanner);
+    if clean {
+        body.push_str("\nArsip bersih ✓");
+    } else {
+        body.push_str(&format!("\n{} berkas terinfeksi:\n", rep.findings.len()));
+        for f in rep.findings.iter().take(20) {
+            body.push_str(&format!("• {} — {}\n", f.path, f.signature));
+        }
+        if rep.findings.len() > 20 {
+            body.push_str(&format!("… dan {} lagi\n", rep.findings.len() - 20));
+        }
+    }
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some(heading), Some(&body));
+    set_notif_icon(&dialog, clean);
+    dialog.add_response("ok", "Tutup");
+    dialog.present();
+}
+
+/// Tempelkan ikon notifikasi (hijau/merah) ke dialog hasil.
+fn set_notif_icon(dialog: &adw::MessageDialog, good: bool) {
+    let img =
+        gtk::Image::from_icon_name(if good { "zippy-good" } else { "zippy-bad" });
+    img.set_pixel_size(64);
+    dialog.set_extra_child(Some(&img));
+}
+
+/// Tampilkan progress indeterminate (pulse) untuk operasi tanpa event per-file.
+/// Mengembalikan flag; panggil [`stop_pulse`] saat selesai.
+fn start_pulse(ui: &Rc<Ui>, label: &str) -> Rc<std::cell::Cell<bool>> {
+    ui.revealer.set_reveal_child(true);
+    ui.cancel_btn.set_sensitive(true);
+    ui.bar.set_fraction(0.0);
+    ui.progress_label.set_text(label);
+    schedule_dev_cancel(ui);
+
+    let flag = Rc::new(std::cell::Cell::new(true));
+    let ui_bar = ui.clone();
+    let f = flag.clone();
+    glib::timeout_add_local(Duration::from_millis(120), move || {
+        if f.get() {
+            ui_bar.bar.pulse();
+            glib::ControlFlow::Continue
+        } else {
+            glib::ControlFlow::Break
+        }
+    });
+    flag
+}
+
+fn stop_pulse(ui: &Rc<Ui>, flag: &Rc<std::cell::Cell<bool>>) {
+    flag.set(false);
+    ui.revealer.set_reveal_child(false);
+    *ui.cancel.borrow_mut() = None;
+}
+
+// ---------------------------------------------------------------------------
 // View (buka satu berkas)
 // ---------------------------------------------------------------------------
 
@@ -1872,8 +2075,15 @@ fn setup_icon_theme() {
     if std::fs::create_dir_all(&dir).is_ok() {
         let f = dir.join("io.github.s4rt4.Zippy.svg");
         let _ = std::fs::write(&f, APP_ICON_SVG);
-        gtk::IconTheme::for_display(&display).add_search_path(&base);
     }
+    // Ikon aksi toolbar berwarna (kategori "actions").
+    let adir = base.join("hicolor/scalable/actions");
+    if std::fs::create_dir_all(&adir).is_ok() {
+        for (name, svg) in ACTION_ICONS {
+            let _ = std::fs::write(adir.join(format!("{name}.svg")), svg);
+        }
+    }
+    gtk::IconTheme::for_display(&display).add_search_path(&base);
 }
 
 fn cache_dir() -> PathBuf {

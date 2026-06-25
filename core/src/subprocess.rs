@@ -410,6 +410,69 @@ fn run_capture(
     Ok(stdout)
 }
 
+/// Hasil mentah menjalankan proses: kode keluar + stdout + stderr.
+///
+/// Berbeda dari [`run_capture`], fungsi ini TIDAK menganggap exit non-zero
+/// sebagai error — beberapa tool memakai kode keluar sebagai sinyal hasil
+/// (mis. `clamscan` keluar 1 saat menemukan virus, `par2` keluar 1 saat butuh
+/// perbaikan). Pemanggil yang menafsirkan kode keluar sendiri.
+pub struct ProcOutput {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Jalankan `cmd`, opsional kirim `input` ke stdin, hormati `cancel`, kembalikan
+/// kode+output mentah.
+pub fn run_status(
+    cmd: &mut Command,
+    input: Option<&str>,
+    cancel: Option<&CancelToken>,
+) -> Result<ProcOutput> {
+    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            Error::Other(format!("biner tidak ditemukan: {e}"))
+        }
+        _ => Error::Io(e),
+    })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Some(s) = input {
+            let _ = stdin.write_all(s.as_bytes());
+        }
+        // stdin di-drop → EOF.
+    }
+
+    let out_reader = drain_thread(child.stdout.take());
+    let err_reader = drain_thread(child.stderr.take());
+
+    let status = loop {
+        if let Some(token) = cancel {
+            if token.is_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = out_reader.join();
+                let _ = err_reader.join();
+                return Err(Error::Cancelled);
+            }
+        }
+        match child.try_wait()? {
+            Some(status) => break status,
+            None => thread::sleep(Duration::from_millis(50)),
+        }
+    };
+
+    Ok(ProcOutput {
+        code: status.code(),
+        stdout: out_reader.join().unwrap_or_default(),
+        stderr: err_reader.join().unwrap_or_default(),
+    })
+}
+
 /// Spawn thread yang membaca seluruh `reader` menjadi `String` (lossy UTF-8).
 fn drain_thread<R: Read + Send + 'static>(reader: Option<R>) -> thread::JoinHandle<String> {
     thread::spawn(move || {
