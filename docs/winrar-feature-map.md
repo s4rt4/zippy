@@ -287,8 +287,11 @@ Catatan kunci Linux: **tak ada API menulis RAR** (unrar hanya baca), jadi semua 
 
 **Gelombang 2 = SELESAI.** Tambahan UX: semua dialog alert kini ber-ikon (helper `Notif`/`set_dialog_icon`/`icon_with`; hasil Test/Scan/Repair/Extract/Compress, Properti, Hapus, Overwrite, Password, Add, Log).
 
-**Gelombang 3 — fitur format menengah (🟡):**
-Convert archives, Rename in-archive, Archive comment (zip/7z), Split to volumes, SFX shell, Compression profiles, symlink/hardlink handling (tar), Name encoding.
+**Gelombang 3 — fitur format menengah (🟡) — sebagian ✅:**
+- ✅ **Convert archives** — `archive::convert()` (extract ke temp → kompres ulang ke format dari ekstensi tujuan); Tools → Convert (dialog level+password), retry password sumber.
+- ✅ **Convert to SFX** — `tools::make_sfx()` → self-extracting `.sh` portabel (stub `sh`+`tar` + payload tar.gz, executable); Tools → Buat SFX.
+- ✅ **Archive comment (ZIP)** — `archive::read_comment`/`set_comment` (salin-mentah lossless + `set_comment`, tolak ZIP terenkripsi); Commands → Komentar Archive (TextView).
+- ⏳ belum: Rename in-archive (zip crate punya `raw_copy_file_rename`), Split to volumes (7z `-v`), Compression profiles, symlink/hardlink tar, Name encoding.
 
 **Tidak dikerjakan (🔴) — khas Windows / RAR-create:**
 Change drive, Lock archive, Quick-open-info, NTFS streams/security, atribut "Archive", taskbar progress, Convert-to-SFX-.exe.

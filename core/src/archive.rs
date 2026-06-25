@@ -619,6 +619,112 @@ pub fn compress_with_level(
 }
 
 // ---------------------------------------------------------------------------
+// Convert (ubah format) — extract ke folder sementara lalu kompres ulang
+// ---------------------------------------------------------------------------
+
+/// Konversi `src` ke format yang ditentukan ekstensi `dest`: ekstrak isi ke
+/// direktori sementara lalu kompres ulang. `src_password` membuka sumber
+/// terenkripsi; `dest_password`/`level` untuk arsip hasil.
+///
+/// Catatan: format stream tunggal tujuan (gz/bz2/xz/zst) hanya menerima satu
+/// berkas — konversi arsip multi-berkas ke sana akan gagal (pakai `.tar.*`).
+pub fn convert(
+    src: &Path,
+    dest: &Path,
+    src_password: Option<&str>,
+    dest_password: Option<&str>,
+    level: Level,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let tmp = scratch_dir("convert");
+    let res = (|| -> Result<()> {
+        fs::create_dir_all(&tmp)?;
+        // Fase ekstrak (tanpa progress per-file; progress utama = fase kompres).
+        extract_all(src, &tmp, src_password, cancel, &crate::progress::NullSink)?;
+
+        let mut inputs: Vec<PathBuf> = fs::read_dir(&tmp)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        inputs.sort();
+        if inputs.is_empty() {
+            return Err(Error::Other("tidak ada berkas untuk dikonversi".into()));
+        }
+        let refs: Vec<&Path> = inputs.iter().map(|p| p.as_path()).collect();
+        compress_with_level(&refs, dest, dest_password, level, cancel, progress)
+    })();
+    let _ = fs::remove_dir_all(&tmp);
+    res
+}
+
+/// Direktori sementara unik untuk operasi (`zippy-<tag>-<pid>-<nanos>`).
+pub(crate) fn scratch_dir(tag: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("zippy-{tag}-{}-{nanos}", std::process::id()))
+}
+
+// ---------------------------------------------------------------------------
+// Komentar arsip (ZIP)
+// ---------------------------------------------------------------------------
+
+/// Baca komentar arsip. Hanya ZIP yang membawa komentar; format lain → kosong.
+pub fn read_comment(archive: &Path) -> Result<String> {
+    if detect_kind(archive)? != ArchiveKind::Zip {
+        return Ok(String::new());
+    }
+    let f = File::open(archive)?;
+    let ar = zip::ZipArchive::new(BufReader::new(f)).map_err(zip_err)?;
+    Ok(String::from_utf8_lossy(ar.comment()).into_owned())
+}
+
+/// Set komentar arsip (ZIP). Tulis-ulang via salin-mentah lossless lalu rename.
+/// Tidak didukung untuk ZIP terenkripsi (salin-mentah merusak field AES).
+pub fn set_comment(
+    archive: &Path,
+    comment: &str,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    if detect_kind(archive)? != ArchiveKind::Zip {
+        return Err(Error::Other(
+            "komentar arsip hanya didukung untuk ZIP".into(),
+        ));
+    }
+    let start = Instant::now();
+    let tmp = temp_sibling(archive);
+    let res = (|| -> Result<()> {
+        let f = File::open(archive)?;
+        let mut src = zip::ZipArchive::new(BufReader::new(f)).map_err(zip_err)?;
+        let total = src.len();
+        for i in 0..total {
+            if src.by_index_raw(i).map_err(zip_err)?.encrypted() {
+                return Err(Error::Other(
+                    "set komentar tidak didukung untuk ZIP terenkripsi".into(),
+                ));
+            }
+        }
+
+        let out = File::create(&tmp)?;
+        let mut zw = zip::ZipWriter::new(BufWriter::new(out));
+        progress.emit(ProgressEvent::Started { total_files: total });
+        for i in 0..total {
+            cancel.check()?;
+            let entry = src.by_index_raw(i).map_err(zip_err)?;
+            let name = entry.name().to_string();
+            zw.raw_copy_file(entry).map_err(zip_err)?;
+            progress.emit(ProgressEvent::FileProcessed { name, index: i });
+        }
+        zw.set_comment(comment);
+        zw.finish().map_err(zip_err)?;
+        Ok(())
+    })();
+    finalize_replace(res, &tmp, archive, start, progress)
+}
+
+// ---------------------------------------------------------------------------
 // Delete (hapus entri — edit in-place)
 // ---------------------------------------------------------------------------
 

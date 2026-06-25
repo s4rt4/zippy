@@ -339,6 +339,9 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     add_action(&group, "wizard", ui, show_wizard);
     add_action(&group, "repair", ui, repair_dialog);
     add_action(&group, "scan", ui, scan_dialog);
+    add_action(&group, "convert", ui, convert_dialog);
+    add_action(&group, "sfx", ui, sfx_dialog);
+    add_action(&group, "comment", ui, comment_dialog);
     add_action(&group, "options", ui, show_preferences);
     add_action(&group, "about", ui, show_about);
     // Favorit: tambah/hapus arsip saat ini, kelola, dan buka (berparameter).
@@ -390,12 +393,15 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     cmds.append(Some("Extract Ke…"), Some("win.extract"));
     cmds.append(Some("Test"), Some("win.test"));
     cmds.append(Some("Hapus"), Some("win.delete"));
+    cmds.append(Some("Komentar Archive…"), Some("win.comment"));
     menu.append_submenu(Some("Commands"), &cmds);
 
     let tools = gio::Menu::new();
     tools.append(Some("Wizard"), Some("win.wizard"));
     tools.append(Some("Pindai Virus…"), Some("win.scan"));
     tools.append(Some("Perbaiki Arsip…"), Some("win.repair"));
+    tools.append(Some("Convert Archive…"), Some("win.convert"));
+    tools.append(Some("Buat SFX (.sh)…"), Some("win.sfx"));
     tools.append(Some("Buat Laporan…"), Some("win.report"));
     tools.append(Some("Cari…"), Some("win.find"));
     menu.append_submenu(Some("Tools"), &tools);
@@ -1707,6 +1713,296 @@ fn show_scan_result(ui: &Rc<Ui>, rep: &zippy_core::ScanReport) {
         ("Virus Terdeteksi!", Notif::Bad)
     };
     show_result_dialog(ui, kind, heading, &body);
+}
+
+// ---------------------------------------------------------------------------
+// Convert (ubah format) + Convert to SFX
+// ---------------------------------------------------------------------------
+
+fn convert_dialog(ui: &Rc<Ui>) {
+    let archive = match ui.current.borrow().clone() {
+        Some(p) => p,
+        None => {
+            show_toast(ui, "Belum ada archive terbuka");
+            return;
+        }
+    };
+    let stem = archive
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("archive");
+    let dialog = gtk::FileDialog::builder()
+        .title("Convert ke… (format dari ekstensi)")
+        .initial_name(format!("{stem}.7z"))
+        .build();
+    let win = ui.window.clone();
+    let ui = ui.clone();
+    dialog.save(Some(&win), gio::Cancellable::NONE, move |res| {
+        if let Ok(file) = res {
+            if let Some(dest) = file.path() {
+                ask_convert_options(&ui, archive.clone(), dest);
+            }
+        }
+    });
+}
+
+/// Dialog tingkat kompresi + password (untuk zip/7z) sebelum konversi.
+fn ask_convert_options(ui: &Rc<Ui>, src: PathBuf, dest: PathBuf) {
+    let kind = zippy_core::archive::kind_from_ext(&dest);
+    if kind.is_none() {
+        show_result_dialog(ui, Notif::Bad, "Format Tidak Dikenali", "Ekstensi tujuan tidak didukung.");
+        return;
+    }
+    let supports_pw = matches!(kind, Some(ArchiveKind::Zip | ArchiveKind::SevenZip));
+    let supports_level = !matches!(kind, Some(ArchiveKind::Tar));
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let level_dropdown = gtk::DropDown::from_strings(&LEVEL_LABELS);
+    level_dropdown.set_selected(index_from_level(ui.config.borrow().level));
+    if supports_level {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.append(&gtk::Label::new(Some("Tingkat kompresi:")));
+        level_dropdown.set_hexpand(true);
+        row.append(&level_dropdown);
+        content.append(&row);
+    }
+    let pw_entry = gtk::PasswordEntry::builder().show_peek_icon(true).build();
+    if supports_pw {
+        pw_entry.set_placeholder_text(Some("Password AES-256 hasil (opsional)"));
+        content.append(&pw_entry);
+    }
+
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some("Convert Archive"), None);
+    dialog.set_extra_child(Some(&icon_with("zippy-add", &content)));
+    dialog.add_response("cancel", "Batal");
+    dialog.add_response("ok", "Convert");
+    dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("ok"));
+    dialog.set_close_response("cancel");
+
+    let ui = ui.clone();
+    dialog.connect_response(None, move |_, resp| {
+        if resp != "ok" {
+            return;
+        }
+        let level = if supports_level {
+            level_from_index(level_dropdown.selected())
+        } else {
+            Level::default()
+        };
+        let dest_pw = if supports_pw {
+            let t = pw_entry.text().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        } else {
+            None
+        };
+        run_convert(&ui, src.clone(), dest.clone(), None, dest_pw, level);
+    });
+    dialog.present();
+}
+
+fn run_convert(
+    ui: &Rc<Ui>,
+    src: PathBuf,
+    dest: PathBuf,
+    src_pw: Option<String>,
+    dest_pw: Option<String>,
+    level: Level,
+) {
+    let src_pw = src_pw.or_else(|| ui.default_password.borrow().clone());
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+
+    let (tx_done, rx_done) = async_channel::bounded(1);
+    let (ws, wd, wsp, wdp) = (src.clone(), dest.clone(), src_pw.clone(), dest_pw.clone());
+    std::thread::spawn(move || {
+        let res = zippy_core::archive::convert(
+            &ws,
+            &wd,
+            wsp.as_deref(),
+            wdp.as_deref(),
+            level,
+            &cancel,
+            &zippy_core::NullSink,
+        );
+        let _ = tx_done.send_blocking(res);
+    });
+
+    let pulse = start_pulse(ui, "Mengonversi…");
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let res = rx_done.recv().await;
+        stop_pulse(&ui, &pulse);
+        match res {
+            Ok(Ok(())) => {
+                log_event(&ui, &format!("Convert: {} → {}", src.display(), dest.display()));
+                show_result_dialog(&ui, Notif::Good, "Konversi Selesai", &format!("Arsip dibuat:\n{}", dest.display()));
+            }
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Konversi dibatalkan"),
+            Ok(Err(Error::Password)) => ask_password(
+                &ui,
+                "Sumber Terenkripsi",
+                "Masukkan password untuk membuka arsip sumber.",
+                "Convert",
+                move |ui, pw| match pw {
+                    Some(pw) => run_convert(ui, src.clone(), dest.clone(), Some(pw), dest_pw.clone(), level),
+                    None => show_toast(ui, "Password kosong"),
+                },
+            ),
+            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "Konversi Gagal", &e.to_string()),
+            Err(_) => {}
+        }
+    });
+}
+
+fn sfx_dialog(ui: &Rc<Ui>) {
+    let archive = match ui.current.borrow().clone() {
+        Some(p) => p,
+        None => {
+            show_toast(ui, "Belum ada archive terbuka");
+            return;
+        }
+    };
+    let stem = archive
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("archive");
+    let dialog = gtk::FileDialog::builder()
+        .title("Buat SFX (.sh) ke…")
+        .initial_name(format!("{stem}.sh"))
+        .build();
+    let win = ui.window.clone();
+    let ui = ui.clone();
+    dialog.save(Some(&win), gio::Cancellable::NONE, move |res| {
+        if let Ok(file) = res {
+            if let Some(dest) = file.path() {
+                run_sfx(&ui, archive.clone(), dest, None);
+            }
+        }
+    });
+}
+
+fn run_sfx(ui: &Rc<Ui>, src: PathBuf, dest: PathBuf, src_pw: Option<String>) {
+    let src_pw = src_pw.or_else(|| ui.default_password.borrow().clone());
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+
+    let (tx_done, rx_done) = async_channel::bounded(1);
+    let (ws, wd, wsp) = (src.clone(), dest.clone(), src_pw.clone());
+    std::thread::spawn(move || {
+        let res = zippy_core::make_sfx(&ws, &wd, wsp.as_deref(), &cancel, &zippy_core::NullSink);
+        let _ = tx_done.send_blocking(res);
+    });
+
+    let pulse = start_pulse(ui, "Membuat SFX…");
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let res = rx_done.recv().await;
+        stop_pulse(&ui, &pulse);
+        match res {
+            Ok(Ok(())) => {
+                log_event(&ui, &format!("SFX dibuat: {}", dest.display()));
+                show_result_dialog(
+                    &ui,
+                    Notif::Good,
+                    "SFX Dibuat",
+                    &format!("Self-extracting script:\n{}\n\nJalankan: sh {} [folder-tujuan]", dest.display(), dest.display()),
+                );
+            }
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Pembuatan SFX dibatalkan"),
+            Ok(Err(Error::Password)) => ask_password(
+                &ui,
+                "Sumber Terenkripsi",
+                "Masukkan password untuk membuka arsip sumber.",
+                "Buat SFX",
+                move |ui, pw| match pw {
+                    Some(pw) => run_sfx(ui, src.clone(), dest.clone(), Some(pw)),
+                    None => show_toast(ui, "Password kosong"),
+                },
+            ),
+            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "SFX Gagal", &e.to_string()),
+            Err(_) => {}
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Komentar arsip (ZIP)
+// ---------------------------------------------------------------------------
+
+fn comment_dialog(ui: &Rc<Ui>) {
+    let archive = match ui.current.borrow().clone() {
+        Some(p) => p,
+        None => {
+            show_toast(ui, "Belum ada archive terbuka");
+            return;
+        }
+    };
+    if !matches!(
+        zippy_core::archive::detect_kind(&archive),
+        Ok(ArchiveKind::Zip)
+    ) {
+        show_result_dialog(ui, Notif::Bad, "Tidak Didukung", "Komentar arsip hanya tersedia untuk ZIP.");
+        return;
+    }
+    let current = zippy_core::archive::read_comment(&archive).unwrap_or_default();
+
+    let view = gtk::TextView::new();
+    view.buffer().set_text(&current);
+    view.set_wrap_mode(gtk::WrapMode::WordChar);
+    let scroll = gtk::ScrolledWindow::builder()
+        .min_content_height(160)
+        .min_content_width(380)
+        .child(&view)
+        .build();
+
+    let dialog = adw::MessageDialog::new(
+        Some(&ui.window),
+        Some("Komentar Archive"),
+        Some("Komentar disimpan di arsip ZIP."),
+    );
+    dialog.set_extra_child(Some(&icon_with("zippy-info", &scroll)));
+    dialog.add_response("cancel", "Batal");
+    dialog.add_response("ok", "Simpan");
+    dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("ok"));
+    dialog.set_close_response("cancel");
+
+    let ui = ui.clone();
+    dialog.connect_response(None, move |_, resp| {
+        if resp != "ok" {
+            return;
+        }
+        let buf = view.buffer();
+        let text = buf
+            .text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string();
+        run_set_comment(&ui, archive.clone(), text);
+    });
+    dialog.present();
+}
+
+fn run_set_comment(ui: &Rc<Ui>, archive: PathBuf, comment: String) {
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+    let (tx_done, rx_done) = async_channel::bounded(1);
+    let wa = archive.clone();
+    std::thread::spawn(move || {
+        let res =
+            zippy_core::archive::set_comment(&wa, &comment, &cancel, &zippy_core::NullSink);
+        let _ = tx_done.send_blocking(res);
+    });
+    let pulse = start_pulse(ui, "Menyimpan komentar…");
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let res = rx_done.recv().await;
+        stop_pulse(&ui, &pulse);
+        match res {
+            Ok(Ok(())) => show_toast(&ui, "Komentar disimpan"),
+            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "Gagal Simpan Komentar", &e.to_string()),
+            Err(_) => {}
+        }
+    });
 }
 
 /// Jenis ikon untuk dialog/notifikasi — menentukan ikon yang ditempel.

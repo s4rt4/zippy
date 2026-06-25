@@ -137,6 +137,43 @@ fn prohibited_ext_excluded_from_extract() {
 }
 
 #[test]
+fn convert_zip_to_targz_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let zip = tmp.path().join("a.zip");
+    compress(&refs, &zip, None, &CancelToken::new(), &NullSink).unwrap();
+
+    let tgz = tmp.path().join("a.tar.gz");
+    convert(&zip, &tgz, None, None, Level::Normal, &CancelToken::new(), &NullSink).unwrap();
+    assert_eq!(detect_kind(&tgz).unwrap(), ArchiveKind::TarGz);
+
+    let out = tmp.path().join("out");
+    extract_all(&tgz, &out, None, &CancelToken::new(), &NullSink).unwrap();
+    assert_extracted(&out);
+}
+
+#[test]
+fn zip_comment_set_and_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let zip = tmp.path().join("c.zip");
+    compress(&refs, &zip, None, &CancelToken::new(), &NullSink).unwrap();
+
+    assert_eq!(read_comment(&zip).unwrap(), "");
+    set_comment(&zip, "Halo komentar", &CancelToken::new(), &NullSink).unwrap();
+    assert_eq!(read_comment(&zip).unwrap(), "Halo komentar");
+
+    // Entri harus tetap utuh setelah set komentar.
+    let out = tmp.path().join("out");
+    extract_all(&zip, &out, None, &CancelToken::new(), &NullSink).unwrap();
+    assert_extracted(&out);
+}
+
+#[test]
 fn roundtrip_tar() {
     roundtrip("tar");
 }

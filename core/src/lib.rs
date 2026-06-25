@@ -23,7 +23,7 @@ pub use error::{Error, Result};
 pub use formats::Format;
 pub use progress::{NullSink, ProgressEvent, ProgressSink};
 pub use tools::{
-    par2_available, repair, scan, virus_scanner, RepairReport, ScanFinding, ScanReport,
+    make_sfx, par2_available, repair, scan, virus_scanner, RepairReport, ScanFinding, ScanReport,
 };
 
 /// Versi crate core, diekspos untuk ditampilkan di UI / `zippy --version`.

@@ -9,12 +9,15 @@
 //!
 //! Semua via subprocess dengan `LC_ALL=C` (lihat [`crate::subprocess`]).
 
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use crate::archive::{self, ArchiveKind};
+use crate::archive::{self, ArchiveKind, Level};
 use crate::cancel::CancelToken;
 use crate::error::{Error, Result};
+use crate::progress::{NullSink, ProgressSink};
 use crate::subprocess::{hardened_command, run_status};
 
 // ---------------------------------------------------------------------------
@@ -221,6 +224,69 @@ fn repair_zip(archive: &Path, cancel: &CancelToken) -> Result<RepairReport> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// SFX — self-extracting shell script (.sh)
+// ---------------------------------------------------------------------------
+
+/// Stub shell yang menyalin payload tar.gz (di-append setelah marker) ke stdout
+/// lalu meng-extract via `tar`. Portabel: hanya butuh `sh`+`tar`+`gzip`.
+const SFX_STUB: &str = "#!/bin/sh\n\
+# Zippy self-extracting archive (payload: tar.gz setelah marker)\n\
+set -e\n\
+DEST=\"${1:-.}\"\n\
+mkdir -p \"$DEST\"\n\
+LINE=$(awk '/^__ZIPPY_SFX_PAYLOAD__/ { print NR + 1; exit 0; }' \"$0\")\n\
+tail -n +\"$LINE\" \"$0\" | tar xzf - -C \"$DEST\"\n\
+echo \"Zippy: diekstrak ke $DEST\"\n\
+exit 0\n\
+__ZIPPY_SFX_PAYLOAD__\n";
+
+/// Buat arsip self-extracting `.sh` dari `src`: ekstrak isi → kemas ulang jadi
+/// tar.gz → tulis stub shell + payload, set executable. `password` membuka
+/// sumber terenkripsi.
+pub fn make_sfx(
+    src: &Path,
+    dest: &Path,
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let tmp = archive::scratch_dir("sfx");
+    let payload = archive::scratch_dir("sfxpl").with_extension("tar.gz");
+
+    let res = (|| -> Result<()> {
+        std::fs::create_dir_all(&tmp)?;
+        archive::extract_all(src, &tmp, password, cancel, &NullSink)?;
+
+        let mut inputs: Vec<PathBuf> = std::fs::read_dir(&tmp)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        inputs.sort();
+        if inputs.is_empty() {
+            return Err(Error::Other("arsip kosong — tidak ada yang dikemas".into()));
+        }
+        let refs: Vec<&Path> = inputs.iter().map(|p| p.as_path()).collect();
+        archive::compress_with_level(&refs, &payload, None, Level::Best, cancel, progress)?;
+
+        let mut out = std::fs::File::create(dest)?;
+        out.write_all(SFX_STUB.as_bytes())?;
+        let mut pf = std::fs::File::open(&payload)?;
+        std::io::copy(&mut pf, &mut out)?;
+        out.flush()?;
+        let mut perm = std::fs::metadata(dest)?.permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(dest, perm)?;
+        Ok(())
+    })();
+
+    let _ = std::fs::remove_dir_all(&tmp);
+    let _ = std::fs::remove_file(&payload);
+    if res.is_err() {
+        let _ = std::fs::remove_file(dest);
+    }
+    res
+}
+
 /// `foo.zip` → `foo-fixed.zip` (di folder yang sama).
 fn fixed_sibling(archive: &Path) -> PathBuf {
     let parent = archive.parent().unwrap_or_else(|| Path::new("."));
@@ -273,5 +339,32 @@ sub/dir/evil.exe: Win.Test.EICAR_HDB-1 FOUND
     #[test]
     fn par2_sidecar_absent_for_missing_file() {
         assert!(par2_sidecar(Path::new("/nonexistent/none.zip")).is_none());
+    }
+
+    #[test]
+    fn sfx_is_executable_and_extracts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("hello.txt");
+        std::fs::write(&file, b"sfx works\n").unwrap();
+        let zip = tmp.path().join("a.zip");
+        archive::compress(&[file.as_path()], &zip, None, &CancelToken::new(), &NullSink).unwrap();
+
+        let sfx = tmp.path().join("a.sh");
+        make_sfx(&zip, &sfx, None, &CancelToken::new(), &NullSink).unwrap();
+
+        let bytes = std::fs::read(&sfx).unwrap();
+        assert!(bytes.starts_with(b"#!/bin/sh"), "harus stub shell");
+        let mode = std::fs::metadata(&sfx).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "harus executable");
+
+        // Jalankan stub → ekstrak ke folder tujuan.
+        let dest = tmp.path().join("out");
+        let status = std::process::Command::new("sh")
+            .arg(&sfx)
+            .arg(&dest)
+            .status()
+            .unwrap();
+        assert!(status.success(), "stub SFX gagal jalan");
+        assert_eq!(std::fs::read(dest.join("hello.txt")).unwrap(), b"sfx works\n");
     }
 }
