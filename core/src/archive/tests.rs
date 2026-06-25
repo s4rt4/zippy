@@ -69,6 +69,7 @@ fn overwrite_mode_skip_rename_overwrite() {
         &out,
         None,
         OverwriteMode::Skip,
+        &[],
         &CancelToken::new(),
         &NullSink,
     )
@@ -82,6 +83,7 @@ fn overwrite_mode_skip_rename_overwrite() {
         &out,
         None,
         OverwriteMode::Rename,
+        &[],
         &CancelToken::new(),
         &NullSink,
     )
@@ -95,11 +97,43 @@ fn overwrite_mode_skip_rename_overwrite() {
         &out,
         None,
         OverwriteMode::Overwrite,
+        &[],
         &CancelToken::new(),
         &NullSink,
     )
     .unwrap();
     assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"halo dunia\n");
+}
+
+#[test]
+fn prohibited_ext_excluded_from_extract() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("ok.txt"), b"aman\n").unwrap();
+    fs::write(src.join("evil.desktop"), b"[Desktop Entry]\n").unwrap();
+    let srcs = [src.join("ok.txt"), src.join("evil.desktop")];
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let archive = tmp.path().join("p.zip");
+    compress(&refs, &archive, None, &CancelToken::new(), &NullSink).unwrap();
+
+    let out = tmp.path().join("out");
+    let banned = vec!["desktop".to_string()];
+    extract_all_with(
+        &archive,
+        &out,
+        None,
+        OverwriteMode::Overwrite,
+        &banned,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
+    assert!(out.join("ok.txt").exists(), "berkas aman harus diekstrak");
+    assert!(
+        !out.join("evil.desktop").exists(),
+        "berkas terlarang tidak boleh diekstrak"
+    );
 }
 
 #[test]

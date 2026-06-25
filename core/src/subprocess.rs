@@ -69,6 +69,7 @@ pub fn sevenzip_extract(
     dest: &Path,
     password: Option<&str>,
     mode: crate::archive::OverwriteMode,
+    prohibited: &[String],
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -79,9 +80,13 @@ pub fn sevenzip_extract(
     cmd.arg("x")
         .arg("-y")
         .arg(mode.sevenzip_flag())
-        .arg(format!("-o{}", dest.display()))
-        .arg("--")
-        .arg(archive);
+        .arg(format!("-o{}", dest.display()));
+    // Kecualikan tipe terlarang secara rekursif: `-x!*.ext` (case-insensitive
+    // via `-scsUTF-8` tak perlu; 7z pola tidak peka huruf di Linux? gunakan -x).
+    for ext in prohibited {
+        cmd.arg(format!("-x!*.{ext}"));
+    }
+    cmd.arg("--").arg(archive);
     run_capture(&mut cmd, password, Some(cancel))?;
 
     progress.emit(ProgressEvent::Finished {
@@ -279,6 +284,7 @@ pub fn unrar_extract(
     dest: &Path,
     password: Option<&str>,
     mode: crate::archive::OverwriteMode,
+    prohibited: &[String],
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -289,11 +295,12 @@ pub fn unrar_extract(
     dest_arg.push("/"); // unrar butuh trailing slash untuk direktori tujuan
 
     let mut cmd = hardened_command("unrar");
-    cmd.arg("x")
-        .arg(mode.unrar_flag())
-        .arg("--")
-        .arg(archive)
-        .arg(dest_arg);
+    cmd.arg("x").arg(mode.unrar_flag());
+    // Kecualikan tipe terlarang: unrar `-x*.ext`.
+    for ext in prohibited {
+        cmd.arg(format!("-x*.{ext}"));
+    }
+    cmd.arg("--").arg(archive).arg(dest_arg);
     run_capture(&mut cmd, password, Some(cancel))?;
 
     progress.emit(ProgressEvent::Finished {

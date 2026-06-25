@@ -341,38 +341,44 @@ pub fn extract_all(
         dest,
         password,
         OverwriteMode::Overwrite,
+        &[],
         cancel,
         progress,
     )
 }
 
 /// Seperti [`extract_all`], tetapi dengan kebijakan [`OverwriteMode`] eksplisit
-/// untuk berkas tujuan yang sudah ada.
+/// untuk berkas yang sudah ada, plus daftar `prohibited` (ekstensi lowercase
+/// tanpa titik) yang **dilewati** saat extract — padanan "exclude from
+/// extracting" WinRAR. `prohibited` kosong = tanpa filter.
 pub fn extract_all_with(
     archive: &Path,
     dest: &Path,
     password: Option<&str>,
     mode: OverwriteMode,
+    prohibited: &[String],
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
     fs::create_dir_all(dest)?;
     let kind = detect_kind(archive)?;
     match kind {
-        ArchiveKind::Zip => extract_zip(archive, dest, password, mode, cancel, progress),
+        ArchiveKind::Zip => {
+            extract_zip(archive, dest, password, mode, prohibited, cancel, progress)
+        }
         k if k.is_tar_family() => {
             let input_size = archive.metadata()?.len();
             let reader = open_tar_reader(archive, k)?;
-            extract::extract_tar(reader, dest, input_size, mode, cancel, progress)
+            extract::extract_tar(reader, dest, input_size, mode, prohibited, cancel, progress)
         }
         ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
-            extract_single(archive, dest, kind, mode, cancel, progress)
+            extract_single(archive, dest, kind, mode, prohibited, cancel, progress)
         }
         ArchiveKind::SevenZip => {
-            subprocess::sevenzip_extract(archive, dest, password, mode, cancel, progress)
+            subprocess::sevenzip_extract(archive, dest, password, mode, prohibited, cancel, progress)
         }
         ArchiveKind::Rar => {
-            subprocess::unrar_extract(archive, dest, password, mode, cancel, progress)
+            subprocess::unrar_extract(archive, dest, password, mode, prohibited, cancel, progress)
         }
         _ => Err(Error::UnsupportedFormat),
     }
@@ -544,6 +550,7 @@ pub fn extract_entry(
                 dest_dir,
                 kind,
                 OverwriteMode::Overwrite,
+                &[],
                 cancel,
                 &crate::progress::NullSink,
             )?;
@@ -933,6 +940,7 @@ fn extract_zip(
     dest: &Path,
     password: Option<&str>,
     mode: OverwriteMode,
+    prohibited: &[String],
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -956,7 +964,7 @@ fn extract_zip(
 
         if is_dir {
             fs::create_dir_all(extract::prepare_dest(dest, &name)?)?;
-        } else if let Some(out) = extract::resolve_dest(dest, &name, mode)? {
+        } else if let Some(out) = extract::resolve_dest(dest, &name, mode, prohibited)? {
             extract::copy_guarded_to_file(&mut e, &out, &mut guard, cancel)?;
         }
 
@@ -1213,6 +1221,7 @@ fn extract_single(
     dest: &Path,
     kind: ArchiveKind,
     mode: OverwriteMode,
+    prohibited: &[String],
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -1231,7 +1240,7 @@ fn extract_single(
     let mut guard = DecompressionGuard::new(input_size);
 
     progress.emit(ProgressEvent::Started { total_files: 1 });
-    if let Some(out) = extract::resolve_dest(dest, &name, mode)? {
+    if let Some(out) = extract::resolve_dest(dest, &name, mode, prohibited)? {
         extract::copy_guarded_to_file(&mut r, &out, &mut guard, cancel)?;
     }
     progress.emit(ProgressEvent::FileProcessed { name, index: 0 });

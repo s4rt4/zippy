@@ -35,7 +35,12 @@ pub(crate) fn resolve_dest(
     dest: &Path,
     name: &str,
     mode: OverwriteMode,
+    prohibited: &[String],
 ) -> Result<Option<PathBuf>> {
+    // Lewati tipe berkas terlarang (security) sebelum menyentuh disk.
+    if ext_prohibited(name, prohibited) {
+        return Ok(None);
+    }
     let out = prepare_dest(dest, name)?;
     if !out.exists() {
         return Ok(Some(out));
@@ -44,6 +49,20 @@ pub(crate) fn resolve_dest(
         OverwriteMode::Overwrite => Ok(Some(out)),
         OverwriteMode::Skip => Ok(None),
         OverwriteMode::Rename => Ok(Some(unique_path(&out))),
+    }
+}
+
+/// Apakah ekstensi `name` (lowercase) ada di daftar terlarang.
+pub(crate) fn ext_prohibited(name: &str, prohibited: &[String]) -> bool {
+    if prohibited.is_empty() {
+        return false;
+    }
+    match Path::new(name).extension().and_then(|e| e.to_str()) {
+        Some(e) => {
+            let e = e.to_ascii_lowercase();
+            prohibited.iter().any(|p| *p == e)
+        }
+        None => false,
     }
 }
 
@@ -135,6 +154,7 @@ pub(crate) fn extract_tar<R: Read>(
     dest: &Path,
     input_size: u64,
     mode: OverwriteMode,
+    prohibited: &[String],
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -154,7 +174,7 @@ pub(crate) fn extract_tar<R: Read>(
 
         if is_dir {
             fs::create_dir_all(prepare_dest(dest, &name)?)?;
-        } else if let Some(out) = resolve_dest(dest, &name, mode)? {
+        } else if let Some(out) = resolve_dest(dest, &name, mode, prohibited)? {
             copy_guarded_to_file(&mut entry, &out, &mut guard, cancel)?;
         }
 
@@ -195,7 +215,7 @@ mod tests {
     #[test]
     fn resolve_dest_new_file_returns_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Skip)
+        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Skip, &[])
             .unwrap()
             .unwrap();
         assert_eq!(got, tmp.path().join("a.txt"));
@@ -205,7 +225,7 @@ mod tests {
     fn resolve_dest_skip_returns_none_when_exists() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), b"x").unwrap();
-        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Skip).unwrap();
+        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Skip, &[]).unwrap();
         assert!(got.is_none());
     }
 
@@ -213,7 +233,7 @@ mod tests {
     fn resolve_dest_overwrite_returns_same_path() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), b"x").unwrap();
-        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Overwrite)
+        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Overwrite, &[])
             .unwrap()
             .unwrap();
         assert_eq!(got, tmp.path().join("a.txt"));
@@ -223,17 +243,29 @@ mod tests {
     fn resolve_dest_rename_picks_unique_name() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), b"x").unwrap();
-        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Rename)
+        let got = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Rename, &[])
             .unwrap()
             .unwrap();
         assert_eq!(got, tmp.path().join("a (1).txt"));
 
         // Bila "(1)" juga ada → lanjut ke "(2)".
         std::fs::write(tmp.path().join("a (1).txt"), b"x").unwrap();
-        let got2 = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Rename)
+        let got2 = resolve_dest(tmp.path(), "a.txt", OverwriteMode::Rename, &[])
             .unwrap()
             .unwrap();
         assert_eq!(got2, tmp.path().join("a (2).txt"));
+    }
+
+    #[test]
+    fn resolve_dest_prohibited_ext_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let banned = vec!["desktop".to_string(), "sh".to_string()];
+        assert!(resolve_dest(tmp.path(), "evil.desktop", OverwriteMode::Overwrite, &banned)
+            .unwrap()
+            .is_none());
+        assert!(resolve_dest(tmp.path(), "ok.txt", OverwriteMode::Overwrite, &banned)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

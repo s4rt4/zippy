@@ -40,6 +40,11 @@ pub struct Config {
     pub scheme: Scheme,
     /// Tampilkan dialog konfirmasi sebelum menghapus entri.
     pub confirm_delete: bool,
+    /// Ekstensi (lowercase, tanpa titik) yang dilewati saat extract — padanan
+    /// "File types to exclude from extracting" WinRAR. Kosong = tidak memfilter.
+    pub prohibited: Vec<String>,
+    /// Pindahkan arsip ke Trash setelah extract sukses (WinRAR "Delete archive").
+    pub delete_after_extract: bool,
 }
 
 impl Default for Config {
@@ -48,8 +53,20 @@ impl Default for Config {
             level: Level::Normal,
             scheme: Scheme::Default,
             confirm_delete: true,
+            prohibited: Vec::new(),
+            delete_after_extract: false,
         }
     }
+}
+
+/// Pecah teks daftar ekstensi (dipisah spasi/koma) jadi Vec lowercase tanpa
+/// titik/asterisk: `"*.desktop, sh"` → `["desktop", "sh"]`.
+pub fn parse_prohibited(s: &str) -> Vec<String> {
+    s.split([',', ' ', '\t', ';'])
+        .map(|t| t.trim().trim_start_matches('*').trim_start_matches('.'))
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_ascii_lowercase())
+        .collect()
 }
 
 fn level_str(l: Level) -> &'static str {
@@ -107,6 +124,8 @@ impl Config {
                     "compression_level" => c.level = level_parse(v),
                     "color_scheme" => c.scheme = Scheme::parse(v),
                     "confirm_delete" => c.confirm_delete = v != "false",
+                    "prohibited" => c.prohibited = parse_prohibited(v),
+                    "delete_after_extract" => c.delete_after_extract = v == "true",
                     _ => {}
                 }
             }
@@ -117,10 +136,12 @@ impl Config {
     pub fn save(&self) {
         let _ = fs::create_dir_all(config_dir());
         let body = format!(
-            "compression_level={}\ncolor_scheme={}\nconfirm_delete={}\n",
+            "compression_level={}\ncolor_scheme={}\nconfirm_delete={}\nprohibited={}\ndelete_after_extract={}\n",
             level_str(self.level),
             self.scheme.as_str(),
             self.confirm_delete,
+            self.prohibited.join(" "),
+            self.delete_after_extract,
         );
         let _ = fs::write(config_file(), body);
     }

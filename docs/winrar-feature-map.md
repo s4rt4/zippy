@@ -280,7 +280,12 @@ Catatan kunci Linux: **tak ada API menulis RAR** (unrar hanya baca), jadi semua 
 - ✅ Generate report (Tools menu → .txt: ringkasan + tabel TSV)
 - ✅ Display in file manager (toast "Buka Folder" pasca-extract)
 - ✅ **Overwrite mode di Extract** — `OverwriteMode{Overwrite,Skip,Rename}` di core (`extract_all_with`, native via `resolve_dest`/`unique_path`, 7z `-aoa/-aos/-aou`, unrar `-o+/-o-/-or`); GUI memunculkan dialog pilihan hanya saat ada konflik (`count_conflicts`/`ask_overwrite_mode`).
-- ⏳ belum: View log, Delete-after-archiving, Prohibited file types, Delete-archive-to-Trash.
+- ✅ **View log** — buffer sesi ber-timestamp (`log_event`), Options → Lihat Log (dialog scrollable + Bersihkan).
+- ✅ **Delete-after-archiving** — checkbox di dialog Add → sumber dipindah ke Trash (`trash_sources`).
+- ✅ **Prohibited file types** — `Config.prohibited` + Preferences EntryRow; di-skip saat extract (native `ext_prohibited`, 7z `-x!*.ext`, unrar `-x*.ext`).
+- ✅ **Delete-archive-to-Trash** — Preferences switch `delete_after_extract` → arsip dipindah Trash + ditutup pasca-extract sukses.
+
+**Gelombang 2 = SELESAI.** Tambahan UX: semua dialog alert kini ber-ikon (helper `Notif`/`set_dialog_icon`/`icon_with`; hasil Test/Scan/Repair/Extract/Compress, Properti, Hapus, Overwrite, Password, Add, Log).
 
 **Gelombang 3 — fitur format menengah (🟡):**
 Convert archives, Rename in-archive, Archive comment (zip/7z), Split to volumes, SFX shell, Compression profiles, symlink/hardlink handling (tar), Name encoding.
