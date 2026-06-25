@@ -900,3 +900,167 @@ fn sevenzip_roundtrip_if_available() {
     extract_all(&archive, &out, None, &CancelToken::new(), &NullSink).unwrap();
     assert_extracted(&out);
 }
+
+// ---------------------------------------------------------------------------
+// Adversarial / edge cases (v0.4 hardening)
+// ---------------------------------------------------------------------------
+
+/// Helper: bangun zip terenkripsi dari pohon contoh.
+fn enc_zip(tmp: &Path, name: &str, pw: &str) -> PathBuf {
+    let src = tmp.join(format!("{name}-src"));
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let zip = tmp.join(name);
+    compress(&refs, &zip, Some(pw), &CancelToken::new(), &NullSink).unwrap();
+    zip
+}
+
+#[test]
+fn convert_to_single_file_multi_input_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let zip = tmp.path().join("multi.zip");
+    compress(&refs, &zip, None, &CancelToken::new(), &NullSink).unwrap();
+
+    // ZIP multi-berkas → .gz (stream tunggal) harus gagal, bukan panik.
+    let gz = tmp.path().join("out.gz");
+    let r = convert(
+        &zip,
+        &gz,
+        None,
+        None,
+        Level::Normal,
+        &CancelToken::new(),
+        &NullSink,
+    );
+    assert!(r.is_err(), "convert multi→single harus error");
+}
+
+#[test]
+fn convert_encrypted_to_encrypted_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = enc_zip(tmp.path(), "src.zip", "rahasia");
+    let dest = tmp.path().join("dest.zip");
+    convert(
+        &src,
+        &dest,
+        Some("rahasia"),
+        Some("baru"),
+        Level::Normal,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
+
+    // Password baru benar → sukses; password lama/salah → gagal.
+    let ok = tmp.path().join("ok");
+    extract_all(&dest, &ok, Some("baru"), &CancelToken::new(), &NullSink).unwrap();
+    assert_extracted(&ok);
+    let bad = tmp.path().join("bad");
+    assert!(extract_all(&dest, &bad, Some("rahasia"), &CancelToken::new(), &NullSink).is_err());
+}
+
+#[test]
+fn comment_guards_non_zip_and_encrypted() {
+    let tmp = tempfile::tempdir().unwrap();
+    // TAR: baca komentar = kosong, set komentar = error.
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let tar = tmp.path().join("a.tar");
+    compress(&refs, &tar, None, &CancelToken::new(), &NullSink).unwrap();
+    assert_eq!(read_comment(&tar).unwrap(), "");
+    assert!(set_comment(&tar, "x", &CancelToken::new(), &NullSink).is_err());
+
+    // ZIP terenkripsi: set komentar ditolak (salin-mentah merusak AES).
+    let enc = enc_zip(tmp.path(), "enc.zip", "rahasia");
+    assert!(set_comment(&enc, "x", &CancelToken::new(), &NullSink).is_err());
+}
+
+#[test]
+fn rename_directory_recursive_zip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let zip = tmp.path().join("d.zip");
+    compress(&refs, &zip, None, &CancelToken::new(), &NullSink).unwrap();
+
+    // Rename folder "sub" → "folder": anak ikut pindah prefiks.
+    rename(&zip, "sub", "folder", None, &CancelToken::new(), &NullSink).unwrap();
+    let names: Vec<String> = list(&zip, None)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "folder/b.txt"),
+        "names: {names:?}"
+    );
+    assert!(!names.iter().any(|n| n.starts_with("sub/")));
+
+    let out = tmp.path().join("out");
+    extract_all(&zip, &out, None, &CancelToken::new(), &NullSink).unwrap();
+    assert_eq!(fs::read(out.join("folder/b.txt")).unwrap(), b"isi kedua\n");
+}
+
+#[test]
+fn rename_on_encrypted_zip_reencrypts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let zip = enc_zip(tmp.path(), "e.zip", "rahasia");
+    rename(
+        &zip,
+        "a.txt",
+        "z.txt",
+        Some("rahasia"),
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
+
+    // Hasil tetap terenkripsi: butuh password, isi utuh.
+    let out = tmp.path().join("out");
+    extract_all(&zip, &out, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+    assert_eq!(fs::read(out.join("z.txt")).unwrap(), b"halo dunia\n");
+    assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b"isi kedua\n");
+    let bad = tmp.path().join("bad");
+    assert!(extract_all(&zip, &bad, None, &CancelToken::new(), &NullSink).is_err());
+}
+
+#[test]
+fn delete_on_encrypted_zip_reencrypts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let zip = enc_zip(tmp.path(), "e.zip", "rahasia");
+    delete(
+        &zip,
+        &["a.txt"],
+        Some("rahasia"),
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
+
+    let out = tmp.path().join("out");
+    extract_all(&zip, &out, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+    assert!(!out.join("a.txt").exists(), "a.txt harus terhapus");
+    assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b"isi kedua\n");
+}
+
+#[test]
+fn compress_volume_ignored_for_zip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let zip = tmp.path().join("v.zip");
+    // volume hanya berlaku 7z; untuk zip harus diabaikan tanpa panik.
+    let opts = CompressOptions {
+        volume: Some("1k"),
+        ..Default::default()
+    };
+    compress_with_opts(&refs, &zip, &opts, &CancelToken::new(), &NullSink).unwrap();
+    assert!(zip.exists());
+    assert!(!list(&zip, None).unwrap().is_empty());
+}

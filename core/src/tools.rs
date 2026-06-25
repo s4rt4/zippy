@@ -401,4 +401,36 @@ sub/dir/evil.exe: Win.Test.EICAR_HDB-1 FOUND
             b"sfx works\n"
         );
     }
+
+    #[test]
+    fn sfx_from_encrypted_zip_yields_plain_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("secret.txt");
+        std::fs::write(&file, b"rahasia isi\n").unwrap();
+        let zip = tmp.path().join("enc.zip");
+        archive::compress(
+            &[file.as_path()],
+            &zip,
+            Some("rahasia"),
+            &CancelToken::new(),
+            &NullSink,
+        )
+        .unwrap();
+
+        // SFX membuka sumber dgn password lalu mengemas ulang jadi tar.gz polos.
+        let sfx = tmp.path().join("enc.sh");
+        make_sfx(&zip, &sfx, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+
+        let dest = tmp.path().join("out");
+        let status = std::process::Command::new("sh")
+            .arg(&sfx)
+            .arg(&dest)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read(dest.join("secret.txt")).unwrap(),
+            b"rahasia isi\n"
+        );
+    }
 }
