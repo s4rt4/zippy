@@ -494,7 +494,7 @@ fn refresh_favorites_menu(ui: &Rc<Ui>) {
 
 fn fav_add_current(ui: &Rc<Ui>) {
     let Some(path) = ui.current.borrow().clone() else {
-        show_toast(ui, "Buka arsip dulu sebelum menambah ke Favorit");
+        warn(ui, "Buka arsip dulu sebelum menambah ke Favorit");
         return;
     };
     config::favorites_add(&path);
@@ -507,7 +507,7 @@ fn fav_remove_current(ui: &Rc<Ui>) {
         return;
     };
     if !config::favorites_contains(&path) {
-        show_toast(ui, "Arsip ini tidak ada di Favorit");
+        warn(ui, "Arsip ini tidak ada di Favorit");
         return;
     }
     config::favorites_remove(&path);
@@ -912,7 +912,7 @@ fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
             }
             Ok((Err(e), _)) => {
                 ui.status.set_text("Gagal membuka archive");
-                show_toast(&ui, &format!("Gagal membuka: {e}"));
+                warn(&ui, &format!("Gagal membuka: {e}"));
             }
             Err(_) => {}
         }
@@ -946,7 +946,7 @@ fn extract_dialog(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            show_toast(ui, "Belum ada archive terbuka");
+            warn(ui, "Belum ada archive terbuka");
             return;
         }
     };
@@ -1158,7 +1158,7 @@ fn prompt_password(ui: &Rc<Ui>, archive: &Path, dest: &Path, mode: OverwriteMode
         "Buka",
         move |ui, pw| match pw {
             Some(pw) => run_extract(ui, archive.clone(), dest.clone(), Some(pw), mode),
-            None => show_toast(ui, "Password kosong"),
+            None => warn(ui, "Password kosong"),
         },
     );
 }
@@ -1195,7 +1195,7 @@ fn save_archive_copy(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            show_toast(ui, "Belum ada archive terbuka");
+            warn(ui, "Belum ada archive terbuka");
             return;
         }
     };
@@ -1211,12 +1211,12 @@ fn save_archive_copy(ui: &Rc<Ui>) {
         if let Ok(file) = res {
             if let Some(dest) = file.path() {
                 if dest == archive {
-                    show_toast(&ui, "Tujuan sama dengan sumber");
+                    warn(&ui, "Tujuan sama dengan sumber");
                     return;
                 }
                 match std::fs::copy(&archive, &dest) {
                     Ok(_) => show_toast(&ui, "Salinan archive disimpan"),
-                    Err(e) => show_toast(&ui, &format!("Gagal menyimpan: {e}")),
+                    Err(e) => warn(&ui, &format!("Gagal menyimpan: {e}")),
                 }
             }
         }
@@ -1228,13 +1228,13 @@ fn generate_report(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            show_toast(ui, "Belum ada archive terbuka");
+            warn(ui, "Belum ada archive terbuka");
             return;
         }
     };
     let entries = ui.entries.borrow().clone();
     if entries.is_empty() {
-        show_toast(ui, "Archive kosong");
+        warn(ui, "Archive kosong");
         return;
     }
     let report = build_report(&archive, &entries);
@@ -1254,7 +1254,7 @@ fn generate_report(ui: &Rc<Ui>) {
                         let dir = dest.parent().map(Path::to_path_buf).unwrap_or(dest);
                         show_toast_open_folder(&ui, "Laporan disimpan", dir);
                     }
-                    Err(e) => show_toast(&ui, &format!("Gagal menulis laporan: {e}")),
+                    Err(e) => warn(&ui, &format!("Gagal menulis laporan: {e}")),
                 }
             }
         }
@@ -1598,7 +1598,7 @@ fn trash_sources(ui: &Rc<Ui>, sources: &[PathBuf]) {
         log_event(ui, &format!("{} sumber dipindah ke Trash", sources.len()));
         show_toast(ui, "Berkas sumber dipindahkan ke Trash");
     } else {
-        show_toast(ui, &format!("{failed} sumber gagal dipindah ke Trash"));
+        warn(ui, &format!("{failed} sumber gagal dipindah ke Trash"));
     }
 }
 
@@ -1638,7 +1638,7 @@ fn schedule_dev_cancel(ui: &Rc<Ui>) {
 fn test_dialog(ui: &Rc<Ui>) {
     match ui.current.borrow().clone() {
         Some(archive) => run_test(ui, archive, None),
-        None => show_toast(ui, "Belum ada archive terbuka"),
+        None => warn(ui, "Belum ada archive terbuka"),
     }
 }
 
@@ -1705,7 +1705,7 @@ fn run_test(ui: &Rc<Ui>, archive: PathBuf, password: Option<String>) {
                     "Uji",
                     move |ui, pw| match pw {
                         Some(pw) => run_test(ui, archive.clone(), Some(pw)),
-                        None => show_toast(ui, "Password kosong"),
+                        None => warn(ui, "Password kosong"),
                     },
                 );
             }
@@ -1727,7 +1727,7 @@ fn run_test(ui: &Rc<Ui>, archive: PathBuf, password: Option<String>) {
 fn repair_dialog(ui: &Rc<Ui>) {
     match ui.current.borrow().clone() {
         Some(archive) => run_repair(ui, archive),
-        None => show_toast(ui, "Belum ada archive terbuka"),
+        None => warn(ui, "Belum ada archive terbuka"),
     }
 }
 
@@ -1789,7 +1789,7 @@ fn scan_dialog(ui: &Rc<Ui>) {
     }
     match ui.current.borrow().clone() {
         Some(archive) => run_scan(ui, archive),
-        None => show_toast(ui, "Belum ada archive terbuka"),
+        None => warn(ui, "Belum ada archive terbuka"),
     }
 }
 
@@ -1847,7 +1847,7 @@ fn convert_dialog(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            show_toast(ui, "Belum ada archive terbuka");
+            warn(ui, "Belum ada archive terbuka");
             return;
         }
     };
@@ -1970,7 +1970,7 @@ fn run_convert(
                 "Convert",
                 move |ui, pw| match pw {
                     Some(pw) => run_convert(ui, src.clone(), dest.clone(), Some(pw), dest_pw.clone(), level),
-                    None => show_toast(ui, "Password kosong"),
+                    None => warn(ui, "Password kosong"),
                 },
             ),
             Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "Konversi Gagal", &e.to_string()),
@@ -1983,7 +1983,7 @@ fn sfx_dialog(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            show_toast(ui, "Belum ada archive terbuka");
+            warn(ui, "Belum ada archive terbuka");
             return;
         }
     };
@@ -2041,7 +2041,7 @@ fn run_sfx(ui: &Rc<Ui>, src: PathBuf, dest: PathBuf, src_pw: Option<String>) {
                 "Buat SFX",
                 move |ui, pw| match pw {
                     Some(pw) => run_sfx(ui, src.clone(), dest.clone(), Some(pw)),
-                    None => show_toast(ui, "Password kosong"),
+                    None => warn(ui, "Password kosong"),
                 },
             ),
             Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "SFX Gagal", &e.to_string()),
@@ -2058,7 +2058,7 @@ fn comment_dialog(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            show_toast(ui, "Belum ada archive terbuka");
+            warn(ui, "Belum ada archive terbuka");
             return;
         }
     };
@@ -2174,6 +2174,12 @@ fn icon_with(icon: &str, content: &impl IsA<gtk::Widget>) -> gtk::Box {
     row
 }
 
+/// Dialog peringatan ringkas ber-ikon (Bad) — pengganti toast untuk pesan
+/// "tindakan terblokir" / error agar konsisten punya ikon.
+fn warn(ui: &Rc<Ui>, msg: &str) {
+    show_result_dialog(ui, Notif::Bad, "Perhatian", msg);
+}
+
 /// Dialog hasil/peringatan ber-ikon dengan satu tombol "Tutup" — pengganti
 /// toast untuk pesan penting (gaya konsisten dgn dialog Repair/Scan).
 fn show_result_dialog(ui: &Rc<Ui>, kind: Notif, heading: &str, body: &str) {
@@ -2221,13 +2227,13 @@ fn stop_pulse(ui: &Rc<Ui>, flag: &Rc<std::cell::Cell<bool>>) {
 fn view_selected(ui: &Rc<Ui>) {
     match selected_entry(ui) {
         Some(obj) => view_entry(ui, &obj),
-        None => show_toast(ui, "Pilih berkas dulu"),
+        None => warn(ui, "Pilih berkas dulu"),
     }
 }
 
 fn view_entry(ui: &Rc<Ui>, obj: &file_list::EntryObject) {
     if obj.is_parent() || obj.is_dir() {
-        show_toast(ui, "Pilih berkas, bukan folder");
+        warn(ui, "Pilih berkas, bukan folder");
         return;
     }
     match ui.current.borrow().clone() {
@@ -2271,11 +2277,11 @@ fn run_view(ui: &Rc<Ui>, archive: PathBuf, name: String, password: Option<String
                     "Buka",
                     move |ui, pw| match pw {
                         Some(pw) => run_view(ui, archive.clone(), name.clone(), Some(pw)),
-                        None => show_toast(ui, "Password kosong"),
+                        None => warn(ui, "Password kosong"),
                     },
                 );
             }
-            Ok(Err(e)) => show_toast(&ui, &format!("Gagal membuka: {e}")),
+            Ok(Err(e)) => warn(&ui, &format!("Gagal membuka: {e}")),
             Err(_) => {}
         }
     });
@@ -2546,7 +2552,7 @@ fn extract_selected(ui: &Rc<Ui>) {
     names.sort();
     names.dedup();
     if names.is_empty() {
-        show_toast(ui, "Tidak ada berkas untuk di-extract");
+        warn(ui, "Tidak ada berkas untuk di-extract");
         return;
     }
 
@@ -2646,11 +2652,11 @@ fn run_extract_selected(
                         Some(pw) => {
                             run_extract_selected(ui, archive.clone(), names.clone(), dest.clone(), Some(pw))
                         }
-                        None => show_toast(ui, "Password kosong"),
+                        None => warn(ui, "Password kosong"),
                     },
                 );
             }
-            Ok(Err(e)) => show_toast(&ui, &format!("Gagal extract: {e}")),
+            Ok(Err(e)) => warn(&ui, &format!("Gagal extract: {e}")),
             Err(_) => {}
         }
     });
@@ -2669,11 +2675,11 @@ fn delete_selected(ui: &Rc<Ui>) {
     // Format yang tidak mendukung hapus: tolak lebih awal dengan pesan jelas.
     match zippy_core::archive::kind_from_ext(&archive) {
         Some(ArchiveKind::Rar) => {
-            show_toast(ui, "RAR tidak mendukung hapus (extract-only)");
+            warn(ui, "RAR tidak mendukung hapus (extract-only)");
             return;
         }
         Some(ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst) => {
-            show_toast(ui, "Format stream tunggal tak punya entri untuk dihapus");
+            warn(ui, "Format stream tunggal tak punya entri untuk dihapus");
             return;
         }
         _ => {}
@@ -2784,11 +2790,11 @@ fn run_delete(ui: &Rc<Ui>, archive: PathBuf, names: Vec<String>, password: Optio
                     "Hapus",
                     move |ui, pw| match pw {
                         Some(pw) => run_delete(ui, archive.clone(), names.clone(), Some(pw)),
-                        None => show_toast(ui, "Password kosong"),
+                        None => warn(ui, "Password kosong"),
                     },
                 );
             }
-            Ok(Err(e)) => show_toast(&ui, &format!("Gagal hapus: {e}")),
+            Ok(Err(e)) => warn(&ui, &format!("Gagal hapus: {e}")),
             Err(_) => {}
         }
     });
@@ -2802,17 +2808,17 @@ fn rename_selected(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            show_toast(ui, "Belum ada archive terbuka");
+            warn(ui, "Belum ada archive terbuka");
             return;
         }
     };
     match zippy_core::archive::kind_from_ext(&archive) {
         Some(ArchiveKind::Rar) => {
-            show_toast(ui, "RAR tidak mendukung rename (extract-only)");
+            warn(ui, "RAR tidak mendukung rename (extract-only)");
             return;
         }
         Some(ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst) => {
-            show_toast(ui, "Format stream tunggal tak punya entri untuk di-rename");
+            warn(ui, "Format stream tunggal tak punya entri untuk di-rename");
             return;
         }
         _ => {}
@@ -2820,7 +2826,7 @@ fn rename_selected(ui: &Rc<Ui>) {
     let obj = match selected_entry(ui) {
         Some(o) => o,
         None => {
-            show_toast(ui, "Pilih entri yang akan di-rename");
+            warn(ui, "Pilih entri yang akan di-rename");
             return;
         }
     };
@@ -2851,7 +2857,7 @@ fn rename_selected(ui: &Rc<Ui>) {
         }
         let new = entry.text().to_string();
         if new.trim().is_empty() {
-            show_toast(&ui, "Nama baru kosong");
+            warn(&ui, "Nama baru kosong");
             return;
         }
         run_rename(&ui, archive.clone(), old_full.clone(), new, None);
@@ -2897,7 +2903,7 @@ fn run_rename(ui: &Rc<Ui>, archive: PathBuf, old: String, new: String, password:
                 "Ganti Nama",
                 move |ui, pw| match pw {
                     Some(pw) => run_rename(ui, archive.clone(), old.clone(), new.clone(), Some(pw)),
-                    None => show_toast(ui, "Password kosong"),
+                    None => warn(ui, "Password kosong"),
                 },
             ),
             Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "Rename Gagal", &e.to_string()),
@@ -3215,7 +3221,7 @@ fn show_profiles_manager(ui: &Rc<Ui>) {
         move |_| {
             let name = name_row.text().trim().to_string();
             if name.is_empty() || name.contains('=') || name.contains('.') {
-                show_toast(&ui, "Nama profil tidak valid (tanpa '.' atau '=')");
+                warn(&ui, "Nama profil tidak valid (tanpa '.' atau '=')");
                 return;
             }
             let level = level_from_index(level_row.selected());
@@ -3455,7 +3461,7 @@ fn trash_archive_after_extract(ui: &Rc<Ui>, archive: &Path) {
                 close_archive(ui);
             }
         }
-        Err(e) => show_toast(ui, &format!("Gagal memindah arsip ke Trash: {e}")),
+        Err(e) => warn(ui, &format!("Gagal memindah arsip ke Trash: {e}")),
     }
 }
 
