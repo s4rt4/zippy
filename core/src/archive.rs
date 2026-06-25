@@ -758,6 +758,47 @@ pub fn delete(
     }
 }
 
+/// Ganti nama entri `old_name` → `new_name` di dalam `archive` (edit in-place).
+/// Bila `old_name` adalah direktori, anak-anaknya ikut di-rename (prefiks).
+/// ZIP & TAR ditangani native; 7z lewat `7z rn`. RAR & stream tunggal tidak
+/// mendukung rename.
+pub fn rename(
+    archive: &Path,
+    old_name: &str,
+    new_name: &str,
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let new_trim = new_name.trim_end_matches('/');
+    if new_trim.is_empty() {
+        return Err(Error::Other("nama baru kosong".into()));
+    }
+    if new_trim.contains('/') {
+        return Err(Error::Other(
+            "nama baru tidak boleh mengandung '/' (pindah folder tidak didukung)".into(),
+        ));
+    }
+    // Pertahankan folder induk: `sub/a.txt` + `b.txt` → `sub/b.txt`.
+    let new_full = match old_name.trim_end_matches('/').rsplit_once('/') {
+        Some((parent, _)) => format!("{parent}/{new_trim}"),
+        None => new_trim.to_string(),
+    };
+    let kind = detect_kind(archive)?;
+    match kind {
+        ArchiveKind::Zip => rename_zip(archive, old_name, &new_full, password, cancel, progress),
+        k if k.is_tar_family() => rename_tar(archive, k, old_name, &new_full, cancel, progress),
+        ArchiveKind::SevenZip => {
+            subprocess::sevenzip_rename(archive, old_name, &new_full, password, cancel, progress)
+        }
+        ArchiveKind::Rar => Err(Error::Other("RAR tidak mendukung rename (extract only)".into())),
+        ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => Err(
+            Error::Other("format stream tunggal tidak punya entri untuk di-rename".into()),
+        ),
+        _ => Err(Error::UnsupportedFormat),
+    }
+}
+
 /// Bangun predikat "apakah entri ini harus dihapus" dari daftar target.
 /// Cocok bila nama sama persis, atau berada di bawah target yang merupakan
 /// direktori (`target/...`). Trailing slash diabaikan.
@@ -772,6 +813,28 @@ fn make_remover(names: &[&str]) -> impl Fn(&str) -> bool {
         targets
             .iter()
             .any(|t| n == t || n.starts_with(&format!("{t}/")))
+    }
+}
+
+/// Pembuat fungsi rename: memetakan nama entri lama → baru. Mengembalikan
+/// `Some(nama_baru)` untuk entri yang cocok (entri tepat `old`, atau anak di
+/// bawah folder `old/` → prefiks diganti), `None` untuk entri yang tak berubah.
+fn renamer(old: &str, new: &str) -> impl Fn(&str) -> Option<String> {
+    let old = old.trim_end_matches('/').to_string();
+    let new = new.trim_end_matches('/').to_string();
+    move |name: &str| {
+        let trimmed = name.trim_end_matches('/');
+        if trimmed == old {
+            // Pertahankan trailing slash bila entri direktori.
+            Some(if name.ends_with('/') {
+                format!("{new}/")
+            } else {
+                new.clone()
+            })
+        } else {
+            name.strip_prefix(&format!("{old}/"))
+                .map(|rest| format!("{new}/{rest}"))
+        }
     }
 }
 
@@ -893,6 +956,88 @@ fn delete_zip(
     finalize_replace(res, &tmp, archive, start, progress)
 }
 
+fn rename_zip(
+    archive: &Path,
+    old: &str,
+    new_full: &str,
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    let rn = renamer(old, new_full);
+    let tmp = temp_sibling(archive);
+
+    let res = (|| -> Result<()> {
+        let f = File::open(archive)?;
+        let mut src = zip::ZipArchive::new(BufReader::new(f)).map_err(zip_err)?;
+        let total = src.len();
+
+        let mut enc_flags = Vec::with_capacity(total);
+        let mut matched = false;
+        for i in 0..total {
+            let e = src.by_index_raw(i).map_err(zip_err)?;
+            if rn(e.name()).is_some() {
+                matched = true;
+            }
+            enc_flags.push(e.encrypted());
+        }
+        if !matched {
+            return Err(Error::Other(format!("entry tidak ditemukan: {old}")));
+        }
+        let any_encrypted = enc_flags.iter().any(|&e| e);
+
+        let out = File::create(&tmp)?;
+        let mut zw = zip::ZipWriter::new(BufWriter::new(out));
+        progress.emit(ProgressEvent::Started { total_files: total });
+
+        if !any_encrypted {
+            // Salin-mentah lossless; hanya nama yang berubah.
+            for i in 0..total {
+                cancel.check()?;
+                let entry = src.by_index_raw(i).map_err(zip_err)?;
+                let name = entry.name().to_string();
+                let newname = rn(&name).unwrap_or_else(|| name.clone());
+                zw.raw_copy_file_rename(entry, newname).map_err(zip_err)?;
+                progress.emit(ProgressEvent::FileProcessed { name, index: i });
+            }
+        } else {
+            let pw = password.ok_or(Error::Password)?;
+            for i in 0..total {
+                cancel.check()?;
+                let mut e = if enc_flags[i] {
+                    src.by_index_decrypt(i, pw.as_bytes()).map_err(zip_err)?
+                } else {
+                    src.by_index(i).map_err(zip_err)?
+                };
+                let name = e.name().to_string();
+                let newname = rn(&name).unwrap_or_else(|| name.clone());
+                if e.is_dir() {
+                    zw.add_directory(newname, zip::write::SimpleFileOptions::default())
+                        .map_err(zip_err)?;
+                } else {
+                    let opts: zip::write::FileOptions<'_, ()> =
+                        zip::write::FileOptions::default()
+                            .compression_method(zip::CompressionMethod::Deflated)
+                            .with_aes_encryption(zip::AesMode::Aes256, pw);
+                    zw.start_file(newname, opts).map_err(zip_err)?;
+                    extract::copy_guarded(
+                        &mut e,
+                        &mut zw,
+                        &mut DecompressionGuard::new(u64::MAX),
+                        cancel,
+                    )?;
+                    progress.emit(ProgressEvent::FileProcessed { name, index: i });
+                }
+            }
+        }
+        zw.finish().map_err(zip_err)?;
+        Ok(())
+    })();
+
+    finalize_replace(res, &tmp, archive, start, progress)
+}
+
 fn delete_tar(
     archive: &Path,
     kind: ArchiveKind,
@@ -903,58 +1048,97 @@ fn delete_tar(
     let start = Instant::now();
     let remove = make_remover(names);
     let tmp = temp_sibling(archive);
-
-    let res = (|| -> Result<()> {
-        let reader = open_tar_reader(archive, kind)?;
-        let mut src = tar::Archive::new(reader);
-        let w = BufWriter::new(File::create(&tmp)?);
-        progress.emit(ProgressEvent::Started { total_files: 0 });
-
-        // Rekompresi pakai level default; struktur tar di-stream ulang minus
-        // entri yang dihapus.
-        match kind {
-            ArchiveKind::Tar => {
-                let mut b = tar::Builder::new(w);
-                copy_tar_except(&mut src, &mut b, &remove, cancel, progress)?;
-                b.finish()?;
-            }
-            ArchiveKind::TarGz => {
-                let enc = GzEncoder::new(w, flate2::Compression::default());
-                let mut b = tar::Builder::new(enc);
-                copy_tar_except(&mut src, &mut b, &remove, cancel, progress)?;
-                b.into_inner()?.finish()?;
-            }
-            ArchiveKind::TarBz2 => {
-                let enc = bzip2::write::BzEncoder::new(w, bzip2::Compression::default());
-                let mut b = tar::Builder::new(enc);
-                copy_tar_except(&mut src, &mut b, &remove, cancel, progress)?;
-                b.into_inner()?.finish()?;
-            }
-            ArchiveKind::TarXz => {
-                let enc = xz2::write::XzEncoder::new(w, 6);
-                let mut b = tar::Builder::new(enc);
-                copy_tar_except(&mut src, &mut b, &remove, cancel, progress)?;
-                b.into_inner()?.finish()?;
-            }
-            ArchiveKind::TarZst => {
-                let enc = zstd::stream::write::Encoder::new(w, 3)?;
-                let mut b = tar::Builder::new(enc);
-                copy_tar_except(&mut src, &mut b, &remove, cancel, progress)?;
-                b.into_inner()?.finish()?;
-            }
-            _ => return Err(Error::UnsupportedFormat),
-        }
-        Ok(())
-    })();
-
+    // `None` = buang entri; `Some(nama)` = pertahankan dengan nama itu.
+    let res = stream_tar(
+        archive,
+        kind,
+        &tmp,
+        &|p| if remove(p) { None } else { Some(p.to_string()) },
+        cancel,
+        progress,
+    );
     finalize_replace(res, &tmp, archive, start, progress)
 }
 
-/// Salin semua entri tar dari `src` ke `builder` kecuali yang lolos `remove`.
-fn copy_tar_except<R: Read, W: Write>(
+/// Stream-ulang arsip tar `archive` (kind apa pun di keluarga tar) ke `tmp`,
+/// menerapkan `transform` pada tiap path entri: `None` membuangnya, `Some(nama)`
+/// menyalin dengan nama (mungkin baru). Rekompresi pakai level default.
+fn stream_tar(
+    archive: &Path,
+    kind: ArchiveKind,
+    tmp: &Path,
+    transform: &dyn Fn(&str) -> Option<String>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let reader = open_tar_reader(archive, kind)?;
+    let mut src = tar::Archive::new(reader);
+    let w = BufWriter::new(File::create(tmp)?);
+    progress.emit(ProgressEvent::Started { total_files: 0 });
+
+    match kind {
+        ArchiveKind::Tar => {
+            let mut b = tar::Builder::new(w);
+            copy_tar_transform(&mut src, &mut b, transform, cancel, progress)?;
+            b.finish()?;
+        }
+        ArchiveKind::TarGz => {
+            let enc = GzEncoder::new(w, flate2::Compression::default());
+            let mut b = tar::Builder::new(enc);
+            copy_tar_transform(&mut src, &mut b, transform, cancel, progress)?;
+            b.into_inner()?.finish()?;
+        }
+        ArchiveKind::TarBz2 => {
+            let enc = bzip2::write::BzEncoder::new(w, bzip2::Compression::default());
+            let mut b = tar::Builder::new(enc);
+            copy_tar_transform(&mut src, &mut b, transform, cancel, progress)?;
+            b.into_inner()?.finish()?;
+        }
+        ArchiveKind::TarXz => {
+            let enc = xz2::write::XzEncoder::new(w, 6);
+            let mut b = tar::Builder::new(enc);
+            copy_tar_transform(&mut src, &mut b, transform, cancel, progress)?;
+            b.into_inner()?.finish()?;
+        }
+        ArchiveKind::TarZst => {
+            let enc = zstd::stream::write::Encoder::new(w, 3)?;
+            let mut b = tar::Builder::new(enc);
+            copy_tar_transform(&mut src, &mut b, transform, cancel, progress)?;
+            b.into_inner()?.finish()?;
+        }
+        _ => return Err(Error::UnsupportedFormat),
+    }
+    Ok(())
+}
+
+fn rename_tar(
+    archive: &Path,
+    kind: ArchiveKind,
+    old: &str,
+    new: &str,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    let rn = renamer(old, new);
+    let tmp = temp_sibling(archive);
+    let res = stream_tar(
+        archive,
+        kind,
+        &tmp,
+        &|p| Some(rn(p).unwrap_or_else(|| p.to_string())),
+        cancel,
+        progress,
+    );
+    finalize_replace(res, &tmp, archive, start, progress)
+}
+
+/// Salin entri tar dari `src` ke `builder`, menerapkan `transform` per path
+/// (`None` = lewati). `append_data` menangani nama panjang & checksum header.
+fn copy_tar_transform<R: Read, W: Write>(
     src: &mut tar::Archive<R>,
     builder: &mut tar::Builder<W>,
-    remove: &dyn Fn(&str) -> bool,
+    transform: &dyn Fn(&str) -> Option<String>,
     cancel: &CancelToken,
     progress: &dyn ProgressSink,
 ) -> Result<()> {
@@ -963,14 +1147,12 @@ fn copy_tar_except<R: Read, W: Write>(
         cancel.check()?;
         let mut entry = entry?;
         let path = entry.path()?.to_string_lossy().into_owned();
-        if remove(&path) {
+        let Some(newpath) = transform(&path) else {
             continue;
-        }
-        // `append_data` menangani nama panjang (ekstensi GNU/pax) & menghitung
-        // ulang checksum header.
+        };
         let mut header = entry.header().clone();
-        builder.append_data(&mut header, &path, &mut entry)?;
-        progress.emit(ProgressEvent::FileProcessed { name: path, index });
+        builder.append_data(&mut header, &newpath, &mut entry)?;
+        progress.emit(ProgressEvent::FileProcessed { name: newpath, index });
         index += 1;
     }
     Ok(())

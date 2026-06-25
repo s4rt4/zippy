@@ -284,6 +284,12 @@ pub fn build_ui(app: &adw::Application) {
     setup_context_menu(&ui);
     render(&ui);
 
+    // Akselerator keyboard gaya WinRAR.
+    app.set_accels_for_action("win.rename", &["F2"]);
+    app.set_accels_for_action("win.find", &["F3"]);
+    app.set_accels_for_action("win.delete", &["Delete"]);
+    app.set_accels_for_action("win.open", &["<Ctrl>o"]);
+
     window.present();
 
     // Archive dari argumen CLI (path polos / --open / MIME handler).
@@ -335,6 +341,7 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     add_action(&group, "extract", ui, extract_dialog);
     add_action(&group, "test", ui, test_dialog);
     add_action(&group, "delete", ui, delete_selected);
+    add_action(&group, "rename", ui, rename_selected);
     add_action(&group, "find", ui, toggle_search);
     add_action(&group, "wizard", ui, show_wizard);
     add_action(&group, "repair", ui, repair_dialog);
@@ -392,6 +399,7 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
     cmds.append(Some("Tambah Berkas…"), Some("win.add"));
     cmds.append(Some("Extract Ke…"), Some("win.extract"));
     cmds.append(Some("Test"), Some("win.test"));
+    cmds.append(Some("Ganti Nama…"), Some("win.rename"));
     cmds.append(Some("Hapus"), Some("win.delete"));
     cmds.append(Some("Komentar Archive…"), Some("win.comment"));
     menu.append_submenu(Some("Commands"), &cmds);
@@ -2262,6 +2270,7 @@ fn build_context_menu(ui: &Rc<Ui>) -> gio::Menu {
             s.append(Some("Extract folder ini…"), Some("win.extract_sel"));
             menu.append_section(None, &s);
             let s2 = gio::Menu::new();
+            s2.append(Some("Ganti nama…"), Some("win.rename"));
             s2.append(Some("Salin nama"), Some("win.copy_name"));
             s2.append(Some("Hapus folder ini"), Some("win.delete"));
             s2.append(Some("Properti…"), Some("win.props"));
@@ -2273,6 +2282,7 @@ fn build_context_menu(ui: &Rc<Ui>) -> gio::Menu {
             s.append(Some("Extract berkas ini…"), Some("win.extract_sel"));
             menu.append_section(None, &s);
             let s2 = gio::Menu::new();
+            s2.append(Some("Ganti nama…"), Some("win.rename"));
             s2.append(Some("Salin nama"), Some("win.copy_name"));
             s2.append(Some("Hapus"), Some("win.delete"));
             s2.append(Some("Properti…"), Some("win.props"));
@@ -2663,6 +2673,118 @@ fn run_delete(ui: &Rc<Ui>, archive: PathBuf, names: Vec<String>, password: Optio
                 );
             }
             Ok(Err(e)) => show_toast(&ui, &format!("Gagal hapus: {e}")),
+            Err(_) => {}
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Rename in-archive
+// ---------------------------------------------------------------------------
+
+fn rename_selected(ui: &Rc<Ui>) {
+    let archive = match ui.current.borrow().clone() {
+        Some(p) => p,
+        None => {
+            show_toast(ui, "Belum ada archive terbuka");
+            return;
+        }
+    };
+    match zippy_core::archive::kind_from_ext(&archive) {
+        Some(ArchiveKind::Rar) => {
+            show_toast(ui, "RAR tidak mendukung rename (extract-only)");
+            return;
+        }
+        Some(ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst) => {
+            show_toast(ui, "Format stream tunggal tak punya entri untuk di-rename");
+            return;
+        }
+        _ => {}
+    }
+    let obj = match selected_entry(ui) {
+        Some(o) => o,
+        None => {
+            show_toast(ui, "Pilih entri yang akan di-rename");
+            return;
+        }
+    };
+    if obj.is_parent() {
+        return;
+    }
+    let old_full = obj.full_path();
+
+    let entry = gtk::Entry::new();
+    entry.set_text(&obj.name());
+    entry.set_activates_default(true);
+    let dialog = adw::MessageDialog::new(
+        Some(&ui.window),
+        Some("Ganti Nama"),
+        Some("Masukkan nama baru (tetap di folder yang sama)."),
+    );
+    dialog.set_extra_child(Some(&icon_with("zippy-info", &entry)));
+    dialog.add_response("cancel", "Batal");
+    dialog.add_response("ok", "Ganti Nama");
+    dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("ok"));
+    dialog.set_close_response("cancel");
+
+    let ui = ui.clone();
+    dialog.connect_response(None, move |_, resp| {
+        if resp != "ok" {
+            return;
+        }
+        let new = entry.text().to_string();
+        if new.trim().is_empty() {
+            show_toast(&ui, "Nama baru kosong");
+            return;
+        }
+        run_rename(&ui, archive.clone(), old_full.clone(), new, None);
+    });
+    dialog.present();
+}
+
+fn run_rename(ui: &Rc<Ui>, archive: PathBuf, old: String, new: String, password: Option<String>) {
+    let password = password.or_else(|| ui.default_password.borrow().clone());
+    let cancel = CancelToken::new();
+    *ui.cancel.borrow_mut() = Some(cancel.clone());
+
+    let (tx_done, rx_done) = async_channel::bounded(1);
+    let (wa, wo, wn, wp) = (archive.clone(), old.clone(), new.clone(), password.clone());
+    std::thread::spawn(move || {
+        let res = zippy_core::archive::rename(
+            &wa,
+            &wo,
+            &wn,
+            wp.as_deref(),
+            &cancel,
+            &zippy_core::NullSink,
+        );
+        let _ = tx_done.send_blocking(res);
+    });
+
+    let pulse = start_pulse(ui, "Mengganti nama…");
+    let ui = ui.clone();
+    glib::spawn_future_local(async move {
+        let res = rx_done.recv().await;
+        stop_pulse(&ui, &pulse);
+        match res {
+            Ok(Ok(())) => {
+                log_event(&ui, &format!("Rename: {old} → {new}"));
+                show_toast(&ui, "Nama diubah");
+                load_archive(&ui, archive.clone());
+            }
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Rename dibatalkan"),
+            Ok(Err(Error::Password)) => ask_password(
+                &ui,
+                "Archive Terenkripsi",
+                "Masukkan password untuk mengganti nama entri.",
+                "Ganti Nama",
+                move |ui, pw| match pw {
+                    Some(pw) => run_rename(ui, archive.clone(), old.clone(), new.clone(), Some(pw)),
+                    None => show_toast(ui, "Password kosong"),
+                },
+            ),
+            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "Rename Gagal", &e.to_string()),
             Err(_) => {}
         }
     });

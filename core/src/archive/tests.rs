@@ -174,6 +174,61 @@ fn zip_comment_set_and_read() {
 }
 
 #[test]
+fn rename_zip_in_subdir_keeps_parent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let zip = tmp.path().join("r.zip");
+    compress(&refs, &zip, None, &CancelToken::new(), &NullSink).unwrap();
+
+    rename(&zip, "sub/b.txt", "c.txt", None, &CancelToken::new(), &NullSink).unwrap();
+
+    let names: Vec<String> = list(&zip, None).unwrap().into_iter().map(|e| e.name).collect();
+    assert!(names.iter().any(|n| n == "sub/c.txt"), "names: {names:?}");
+    assert!(!names.iter().any(|n| n == "sub/b.txt"));
+
+    let out = tmp.path().join("out");
+    extract_all(&zip, &out, None, &CancelToken::new(), &NullSink).unwrap();
+    assert_eq!(fs::read(out.join("sub/c.txt")).unwrap(), b"isi kedua\n");
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"halo dunia\n");
+}
+
+#[test]
+fn rename_tar_root_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let tar = tmp.path().join("r.tar");
+    compress(&refs, &tar, None, &CancelToken::new(), &NullSink).unwrap();
+
+    rename(&tar, "a.txt", "z.txt", None, &CancelToken::new(), &NullSink).unwrap();
+
+    let out = tmp.path().join("out");
+    extract_all(&tar, &out, None, &CancelToken::new(), &NullSink).unwrap();
+    assert_eq!(fs::read(out.join("z.txt")).unwrap(), b"halo dunia\n");
+    assert!(!out.join("a.txt").exists());
+}
+
+#[test]
+fn rename_rejects_missing_and_slash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let srcs = make_src(&src);
+    let refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
+    let zip = tmp.path().join("r.zip");
+    compress(&refs, &zip, None, &CancelToken::new(), &NullSink).unwrap();
+
+    // Entri tak ada → error.
+    assert!(rename(&zip, "tidakada.txt", "x.txt", None, &CancelToken::new(), &NullSink).is_err());
+    // Nama baru mengandung '/' → ditolak.
+    assert!(rename(&zip, "a.txt", "d/x.txt", None, &CancelToken::new(), &NullSink).is_err());
+    // Arsip tetap valid (rename gagal tidak merusak).
+    assert_eq!(list(&zip, None).unwrap().len(), 3);
+}
+
+#[test]
 fn roundtrip_tar() {
     roundtrip("tar");
 }

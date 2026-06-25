@@ -176,6 +176,35 @@ pub fn sevenzip_delete(
     Ok(())
 }
 
+/// Ganti nama entri `old` → `new` di archive 7z via `7z rn` (edit in-place).
+pub fn sevenzip_rename(
+    archive: &Path,
+    old: &str,
+    new: &str,
+    password: Option<&str>,
+    cancel: &CancelToken,
+    progress: &dyn ProgressSink,
+) -> Result<()> {
+    let start = Instant::now();
+    progress.emit(ProgressEvent::Started { total_files: 0 });
+
+    let mut cmd = hardened_command("7z");
+    cmd.arg("rn").arg("-y");
+    if password.is_some() {
+        cmd.arg("-p");
+    }
+    cmd.arg("--")
+        .arg(archive)
+        .arg(old.trim_end_matches('/'))
+        .arg(new.trim_end_matches('/'));
+    run_capture(&mut cmd, password, Some(cancel))?;
+
+    progress.emit(ProgressEvent::Finished {
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    });
+    Ok(())
+}
+
 /// Extract satu entry `name` dari archive 7z ke bawah `dest_dir`.
 pub fn sevenzip_extract_entry(
     archive: &Path,
