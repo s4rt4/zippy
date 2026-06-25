@@ -146,7 +146,16 @@ fn convert_zip_to_targz_roundtrip() {
     compress(&refs, &zip, None, &CancelToken::new(), &NullSink).unwrap();
 
     let tgz = tmp.path().join("a.tar.gz");
-    convert(&zip, &tgz, None, None, Level::Normal, &CancelToken::new(), &NullSink).unwrap();
+    convert(
+        &zip,
+        &tgz,
+        None,
+        None,
+        Level::Normal,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
     assert_eq!(detect_kind(&tgz).unwrap(), ArchiveKind::TarGz);
 
     let out = tmp.path().join("out");
@@ -182,9 +191,21 @@ fn rename_zip_in_subdir_keeps_parent() {
     let zip = tmp.path().join("r.zip");
     compress(&refs, &zip, None, &CancelToken::new(), &NullSink).unwrap();
 
-    rename(&zip, "sub/b.txt", "c.txt", None, &CancelToken::new(), &NullSink).unwrap();
+    rename(
+        &zip,
+        "sub/b.txt",
+        "c.txt",
+        None,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
 
-    let names: Vec<String> = list(&zip, None).unwrap().into_iter().map(|e| e.name).collect();
+    let names: Vec<String> = list(&zip, None)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
     assert!(names.iter().any(|n| n == "sub/c.txt"), "names: {names:?}");
     assert!(!names.iter().any(|n| n == "sub/b.txt"));
 
@@ -221,9 +242,25 @@ fn rename_rejects_missing_and_slash() {
     compress(&refs, &zip, None, &CancelToken::new(), &NullSink).unwrap();
 
     // Entri tak ada → error.
-    assert!(rename(&zip, "tidakada.txt", "x.txt", None, &CancelToken::new(), &NullSink).is_err());
+    assert!(rename(
+        &zip,
+        "tidakada.txt",
+        "x.txt",
+        None,
+        &CancelToken::new(),
+        &NullSink
+    )
+    .is_err());
     // Nama baru mengandung '/' → ditolak.
-    assert!(rename(&zip, "a.txt", "d/x.txt", None, &CancelToken::new(), &NullSink).is_err());
+    assert!(rename(
+        &zip,
+        "a.txt",
+        "d/x.txt",
+        None,
+        &CancelToken::new(),
+        &NullSink
+    )
+    .is_err());
     // Arsip tetap valid (rename gagal tidak merusak).
     assert_eq!(list(&zip, None).unwrap().len(), 3);
 }
@@ -279,10 +316,23 @@ fn sevenzip_split_volumes() {
         volume: Some("32k"),
         ..Default::default()
     };
-    compress_with_opts(&[big.as_path()], &dest, &opts, &CancelToken::new(), &NullSink).unwrap();
+    compress_with_opts(
+        &[big.as_path()],
+        &dest,
+        &opts,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
 
-    assert!(dest.with_extension("7z.001").exists(), "volume .001 harus ada");
-    assert!(dest.with_extension("7z.002").exists(), "volume .002 harus ada");
+    assert!(
+        dest.with_extension("7z.001").exists(),
+        "volume .001 harus ada"
+    );
+    assert!(
+        dest.with_extension("7z.002").exists(),
+        "volume .002 harus ada"
+    );
 }
 
 #[test]
@@ -333,7 +383,14 @@ fn single_file_gz_roundtrip() {
     fs::write(&input, b"satu file saja\n").unwrap();
 
     let archive = tmp.path().join("note.txt.gz");
-    compress(&[input.as_path()], &archive, None, &CancelToken::new(), &NullSink).unwrap();
+    compress(
+        &[input.as_path()],
+        &archive,
+        None,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
     assert_eq!(detect_kind(&archive).unwrap(), ArchiveKind::Gz);
 
     let out = tmp.path().join("out");
@@ -348,7 +405,14 @@ fn single_file_zst_roundtrip() {
     fs::write(&input, vec![7u8; 4096]).unwrap();
 
     let archive = tmp.path().join("data.bin.zst");
-    compress(&[input.as_path()], &archive, None, &CancelToken::new(), &NullSink).unwrap();
+    compress(
+        &[input.as_path()],
+        &archive,
+        None,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
     assert_eq!(detect_kind(&archive).unwrap(), ArchiveKind::Zst);
 
     let out = tmp.path().join("out");
@@ -365,17 +429,41 @@ fn zip_aes256_password_roundtrip() {
     let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
 
     let archive = tmp.path().join("secret.zip");
-    compress(&src_refs, &archive, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+    compress(
+        &src_refs,
+        &archive,
+        Some("rahasia"),
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
 
     // Extract dengan password benar → sukses.
     let out_ok = tmp.path().join("ok");
-    extract_all(&archive, &out_ok, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+    extract_all(
+        &archive,
+        &out_ok,
+        Some("rahasia"),
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
     assert_extracted(&out_ok);
 
     // Extract dengan password salah → Error::Password.
     let out_bad = tmp.path().join("bad");
-    let err = extract_all(&archive, &out_bad, Some("salah"), &CancelToken::new(), &NullSink).unwrap_err();
-    assert!(matches!(err, Error::Password), "harusnya Error::Password, dapat {err:?}");
+    let err = extract_all(
+        &archive,
+        &out_bad,
+        Some("salah"),
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Password),
+        "harusnya Error::Password, dapat {err:?}"
+    );
 }
 
 #[test]
@@ -435,9 +523,7 @@ fn tar_compress_emits_per_file_progress() {
         fn emit(&self, ev: ProgressEvent) {
             match ev {
                 ProgressEvent::Started { total_files } => *self.total.lock().unwrap() = total_files,
-                ProgressEvent::FileProcessed { name, .. } => {
-                    self.names.lock().unwrap().push(name)
-                }
+                ProgressEvent::FileProcessed { name, .. } => self.names.lock().unwrap().push(name),
                 _ => {}
             }
         }
@@ -453,8 +539,16 @@ fn tar_compress_emits_per_file_progress() {
     compress(&src_refs, &archive, None, &CancelToken::new(), &sink).unwrap();
 
     let names = sink.names.lock().unwrap();
-    assert_eq!(*sink.total.lock().unwrap(), 2, "total_files harus jumlah berkas");
-    assert_eq!(names.len(), 2, "harus ada FileProcessed per berkas: {names:?}");
+    assert_eq!(
+        *sink.total.lock().unwrap(),
+        2,
+        "total_files harus jumlah berkas"
+    );
+    assert_eq!(
+        names.len(),
+        2,
+        "harus ada FileProcessed per berkas: {names:?}"
+    );
     assert!(names.iter().any(|n| n.contains("a.txt")), "{names:?}");
     assert!(names.iter().any(|n| n.contains("b.txt")), "{names:?}");
 }
@@ -473,7 +567,10 @@ fn extract_precancelled_returns_cancelled() {
     let out = tmp.path().join("out");
     let err = extract_all(&archive, &out, None, &token, &NullSink).unwrap_err();
     assert!(matches!(err, Error::Cancelled), "dapat {err:?}");
-    assert!(!out.join("a.txt").exists(), "tidak boleh ada file ter-extract");
+    assert!(
+        !out.join("a.txt").exists(),
+        "tidak boleh ada file ter-extract"
+    );
 }
 
 #[test]
@@ -488,7 +585,10 @@ fn compress_precancelled_cleans_up_partial() {
     token.cancel();
     let err = compress(&src_refs, &archive, None, &token, &NullSink).unwrap_err();
     assert!(matches!(err, Error::Cancelled), "dapat {err:?}");
-    assert!(!archive.exists(), "archive parsial harus dihapus saat cancel");
+    assert!(
+        !archive.exists(),
+        "archive parsial harus dihapus saat cancel"
+    );
 }
 
 #[test]
@@ -508,7 +608,10 @@ fn rejects_zip_slip_on_extract() {
 
     let out = tmp.path().join("out");
     let err = extract_all(&archive, &out, None, &CancelToken::new(), &NullSink).unwrap_err();
-    assert!(matches!(err, Error::UnsafePath(_)), "harusnya UnsafePath, dapat {err:?}");
+    assert!(
+        matches!(err, Error::UnsafePath(_)),
+        "harusnya UnsafePath, dapat {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -528,9 +631,19 @@ fn delete_zip_removes_file() {
 
     delete(&archive, &["a.txt"], None, &CancelToken::new(), &NullSink).unwrap();
 
-    let names: Vec<String> = list(&archive, None).unwrap().into_iter().map(|e| e.name).collect();
-    assert!(!names.iter().any(|n| n == "a.txt"), "a.txt harusnya terhapus: {names:?}");
-    assert!(names.iter().any(|n| n.contains("b.txt")), "b.txt harus tetap ada: {names:?}");
+    let names: Vec<String> = list(&archive, None)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == "a.txt"),
+        "a.txt harusnya terhapus: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.contains("b.txt")),
+        "b.txt harus tetap ada: {names:?}"
+    );
 
     // Sisa archive masih valid & ter-extract.
     let out = tmp.path().join("out");
@@ -552,9 +665,19 @@ fn delete_zip_removes_directory_recursively() {
 
     delete(&archive, &["sub"], None, &CancelToken::new(), &NullSink).unwrap();
 
-    let names: Vec<String> = list(&archive, None).unwrap().into_iter().map(|e| e.name).collect();
-    assert!(!names.iter().any(|n| n.contains("b.txt")), "isi sub/ harusnya terhapus: {names:?}");
-    assert!(names.iter().any(|n| n == "a.txt"), "a.txt harus tetap ada: {names:?}");
+    let names: Vec<String> = list(&archive, None)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert!(
+        !names.iter().any(|n| n.contains("b.txt")),
+        "isi sub/ harusnya terhapus: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "a.txt"),
+        "a.txt harus tetap ada: {names:?}"
+    );
 }
 
 /// Hapus dari tar.gz: tulis-ulang stream tanpa entri terpilih.
@@ -587,14 +710,31 @@ fn delete_aes_zip_keeps_remaining_decryptable() {
     let src_refs: Vec<&Path> = srcs.iter().map(|p| p.as_path()).collect();
 
     let archive = tmp.path().join("enc.zip");
-    compress(&src_refs, &archive, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+    compress(
+        &src_refs,
+        &archive,
+        Some("rahasia"),
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
 
     // Tanpa password → harus minta password (Error::Password), bukan merusak.
     let err = delete(&archive, &["a.txt"], None, &CancelToken::new(), &NullSink).unwrap_err();
-    assert!(matches!(err, Error::Password), "harusnya Error::Password, dapat {err:?}");
+    assert!(
+        matches!(err, Error::Password),
+        "harusnya Error::Password, dapat {err:?}"
+    );
 
     // Dengan password → sukses; sisa tetap terenkripsi & ter-extract benar.
-    delete(&archive, &["a.txt"], Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+    delete(
+        &archive,
+        &["a.txt"],
+        Some("rahasia"),
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
 
     // Masih terenkripsi (extract tanpa password gagal).
     let nopw = tmp.path().join("nopw");
@@ -602,7 +742,14 @@ fn delete_aes_zip_keeps_remaining_decryptable() {
 
     // Password benar → b.txt utuh, a.txt hilang.
     let out = tmp.path().join("out");
-    extract_all(&archive, &out, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
+    extract_all(
+        &archive,
+        &out,
+        Some("rahasia"),
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
     assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b"isi kedua\n");
     assert!(!out.join("a.txt").exists());
 }
@@ -614,10 +761,27 @@ fn delete_single_stream_unsupported() {
     let input = tmp.path().join("note.txt");
     fs::write(&input, b"x\n").unwrap();
     let archive = tmp.path().join("note.txt.gz");
-    compress(&[input.as_path()], &archive, None, &CancelToken::new(), &NullSink).unwrap();
+    compress(
+        &[input.as_path()],
+        &archive,
+        None,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
 
-    let err = delete(&archive, &["note.txt"], None, &CancelToken::new(), &NullSink).unwrap_err();
-    assert!(matches!(err, Error::Other(_)), "harusnya Error::Other, dapat {err:?}");
+    let err = delete(
+        &archive,
+        &["note.txt"],
+        None,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Other(_)),
+        "harusnya Error::Other, dapat {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -636,18 +800,43 @@ fn zip_levels_affect_size_and_roundtrip() {
 
     let stored = tmp.path().join("stored.zip");
     let best = tmp.path().join("best.zip");
-    compress_with_level(&refs, &stored, None, Level::Store, &CancelToken::new(), &NullSink).unwrap();
-    compress_with_level(&refs, &best, None, Level::Best, &CancelToken::new(), &NullSink).unwrap();
+    compress_with_level(
+        &refs,
+        &stored,
+        None,
+        Level::Store,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
+    compress_with_level(
+        &refs,
+        &best,
+        None,
+        Level::Best,
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
 
     let stored_sz = fs::metadata(&stored).unwrap().len();
     let best_sz = fs::metadata(&best).unwrap().len();
-    assert!(best_sz < stored_sz, "Best ({best_sz}) harus < Store ({stored_sz})");
+    assert!(
+        best_sz < stored_sz,
+        "Best ({best_sz}) harus < Store ({stored_sz})"
+    );
 
     // Round-trip kedua level.
     for arc in [&stored, &best] {
-        let out = tmp.path().join(format!("out-{}", arc.file_stem().unwrap().to_string_lossy()));
+        let out = tmp.path().join(format!(
+            "out-{}",
+            arc.file_stem().unwrap().to_string_lossy()
+        ));
         extract_all(arc, &out, None, &CancelToken::new(), &NullSink).unwrap();
-        assert_eq!(fs::read(out.join("big.txt")).unwrap(), "ABCD".repeat(50_000).into_bytes());
+        assert_eq!(
+            fs::read(out.join("big.txt")).unwrap(),
+            "ABCD".repeat(50_000).into_bytes()
+        );
     }
 }
 
@@ -668,8 +857,18 @@ fn weak_encryption_false_for_aes_and_plain() {
     assert!(!has_weak_encryption(&plain).unwrap());
 
     let aes = tmp.path().join("aes.zip");
-    compress(&src_refs, &aes, Some("rahasia"), &CancelToken::new(), &NullSink).unwrap();
-    assert!(!has_weak_encryption(&aes).unwrap(), "AES-256 bukan enkripsi lemah");
+    compress(
+        &src_refs,
+        &aes,
+        Some("rahasia"),
+        &CancelToken::new(),
+        &NullSink,
+    )
+    .unwrap();
+    assert!(
+        !has_weak_encryption(&aes).unwrap(),
+        "AES-256 bukan enkripsi lemah"
+    );
 }
 
 // (Deteksi ZipCrypto legasi diuji di tests/interop.rs lewat tool `zip` sistem;
@@ -692,7 +891,10 @@ fn sevenzip_roundtrip_if_available() {
     assert_eq!(detect_kind(&archive).unwrap(), ArchiveKind::SevenZip);
 
     let entries = list(&archive, None).unwrap();
-    assert!(entries.iter().any(|e| e.name.contains("a.txt")), "entry 7z: {entries:?}");
+    assert!(
+        entries.iter().any(|e| e.name.contains("a.txt")),
+        "entry 7z: {entries:?}"
+    );
 
     let out = tmp.path().join("out");
     extract_all(&archive, &out, None, &CancelToken::new(), &NullSink).unwrap();

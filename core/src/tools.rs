@@ -110,7 +110,9 @@ pub fn scan(archive: &Path, cancel: &CancelToken) -> Result<ScanReport> {
             other => {
                 last_err = format!(
                     "{scanner} gagal (kode {}): {}",
-                    other.map(|c| c.to_string()).unwrap_or_else(|| "sinyal".into()),
+                    other
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "sinyal".into()),
                     out.stderr.trim()
                 );
             }
@@ -313,7 +315,10 @@ fn fixed_sibling(archive: &Path) -> PathBuf {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("archive");
-    let ext = archive.extension().and_then(|s| s.to_str()).unwrap_or("zip");
+    let ext = archive
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("zip");
     parent.join(format!("{stem}-fixed.{ext}"))
 }
 
@@ -366,7 +371,14 @@ sub/dir/evil.exe: Win.Test.EICAR_HDB-1 FOUND
         let file = tmp.path().join("hello.txt");
         std::fs::write(&file, b"sfx works\n").unwrap();
         let zip = tmp.path().join("a.zip");
-        archive::compress(&[file.as_path()], &zip, None, &CancelToken::new(), &NullSink).unwrap();
+        archive::compress(
+            &[file.as_path()],
+            &zip,
+            None,
+            &CancelToken::new(),
+            &NullSink,
+        )
+        .unwrap();
 
         let sfx = tmp.path().join("a.sh");
         make_sfx(&zip, &sfx, None, &CancelToken::new(), &NullSink).unwrap();
@@ -384,6 +396,9 @@ sub/dir/evil.exe: Win.Test.EICAR_HDB-1 FOUND
             .status()
             .unwrap();
         assert!(status.success(), "stub SFX gagal jalan");
-        assert_eq!(std::fs::read(dest.join("hello.txt")).unwrap(), b"sfx works\n");
+        assert_eq!(
+            std::fs::read(dest.join("hello.txt")).unwrap(),
+            b"sfx works\n"
+        );
     }
 }

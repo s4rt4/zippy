@@ -432,9 +432,9 @@ pub fn extract_all_with(
         ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
             extract_single(archive, dest, kind, mode, prohibited, cancel, progress)
         }
-        ArchiveKind::SevenZip => {
-            subprocess::sevenzip_extract(archive, dest, password, mode, prohibited, cancel, progress)
-        }
+        ArchiveKind::SevenZip => subprocess::sevenzip_extract(
+            archive, dest, password, mode, prohibited, cancel, progress,
+        ),
         ArchiveKind::Rar => {
             subprocess::unrar_extract(archive, dest, password, mode, prohibited, cancel, progress)
         }
@@ -518,6 +518,8 @@ fn test_tar<R: Read>(
     progress.emit(ProgressEvent::Started { total_files: 0 });
 
     let mut index = 0;
+    // `index` hanya untuk progress; entri tar di-stream, bukan diindeks.
+    #[allow(clippy::explicit_counter_loop)]
     for entry in ar.entries()? {
         cancel.check()?;
         let mut entry = entry?;
@@ -679,16 +681,30 @@ pub fn compress_with_opts(
     let kind = kind_from_ext(dest).ok_or(Error::UnsupportedFormat)?;
     let res = match kind {
         ArchiveKind::Zip => compress_zip(inputs, dest, opts.password, opts.level, cancel, progress),
-        k if k.is_tar_family() => {
-            compress_tar(inputs, dest, k, opts.level, opts.symlinks_as_links, cancel, progress)
-        }
+        k if k.is_tar_family() => compress_tar(
+            inputs,
+            dest,
+            k,
+            opts.level,
+            opts.symlinks_as_links,
+            cancel,
+            progress,
+        ),
         ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
             compress_single(inputs, dest, kind, opts.level, cancel, progress)
         }
         ArchiveKind::SevenZip => subprocess::sevenzip_compress(
-            inputs, dest, opts.password, opts.level, opts.volume, cancel, progress,
+            inputs,
+            dest,
+            opts.password,
+            opts.level,
+            opts.volume,
+            cancel,
+            progress,
         ),
-        ArchiveKind::Rar => Err(Error::Other("RAR compress tidak didukung (extract only)".into())),
+        ArchiveKind::Rar => Err(Error::Other(
+            "RAR compress tidak didukung (extract only)".into(),
+        )),
         _ => Err(Error::UnsupportedFormat),
     };
     if res.is_err() {
@@ -840,10 +856,14 @@ pub fn delete(
         ArchiveKind::SevenZip => {
             subprocess::sevenzip_delete(archive, names, password, cancel, progress)
         }
-        ArchiveKind::Rar => Err(Error::Other("RAR tidak mendukung hapus (extract only)".into())),
-        ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => Err(
-            Error::Other("format stream tunggal hanya berisi satu berkas — hapus file-nya saja".into()),
-        ),
+        ArchiveKind::Rar => Err(Error::Other(
+            "RAR tidak mendukung hapus (extract only)".into(),
+        )),
+        ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => {
+            Err(Error::Other(
+                "format stream tunggal hanya berisi satu berkas — hapus file-nya saja".into(),
+            ))
+        }
         _ => Err(Error::UnsupportedFormat),
     }
 }
@@ -881,7 +901,9 @@ pub fn rename(
         ArchiveKind::SevenZip => {
             subprocess::sevenzip_rename(archive, old_name, &new_full, password, cancel, progress)
         }
-        ArchiveKind::Rar => Err(Error::Other("RAR tidak mendukung rename (extract only)".into())),
+        ArchiveKind::Rar => Err(Error::Other(
+            "RAR tidak mendukung rename (extract only)".into(),
+        )),
         ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst => Err(
             Error::Other("format stream tunggal tidak punya entri untuk di-rename".into()),
         ),
@@ -1009,6 +1031,8 @@ fn delete_zip(
             // mentah akan merusak entri. Maka dekripsi tiap entri lalu enkripsi
             // ulang dengan AES-256 (butuh password).
             let pw = password.ok_or(Error::Password)?;
+            // `i` dipakai utk banyak akses terindeks (by_index*, enc_flags).
+            #[allow(clippy::needless_range_loop)]
             for i in 0..total {
                 cancel.check()?;
                 let mut e = if enc_flags[i] {
@@ -1024,10 +1048,9 @@ fn delete_zip(
                     zw.add_directory(name, zip::write::SimpleFileOptions::default())
                         .map_err(zip_err)?;
                 } else {
-                    let opts: zip::write::FileOptions<'_, ()> =
-                        zip::write::FileOptions::default()
-                            .compression_method(zip::CompressionMethod::Deflated)
-                            .with_aes_encryption(zip::AesMode::Aes256, pw);
+                    let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated)
+                        .with_aes_encryption(zip::AesMode::Aes256, pw);
                     zw.start_file(name.clone(), opts).map_err(zip_err)?;
                     extract::copy_guarded(
                         &mut e,
@@ -1093,6 +1116,8 @@ fn rename_zip(
             }
         } else {
             let pw = password.ok_or(Error::Password)?;
+            // `i` dipakai utk banyak akses terindeks (by_index*, enc_flags).
+            #[allow(clippy::needless_range_loop)]
             for i in 0..total {
                 cancel.check()?;
                 let mut e = if enc_flags[i] {
@@ -1106,10 +1131,9 @@ fn rename_zip(
                     zw.add_directory(newname, zip::write::SimpleFileOptions::default())
                         .map_err(zip_err)?;
                 } else {
-                    let opts: zip::write::FileOptions<'_, ()> =
-                        zip::write::FileOptions::default()
-                            .compression_method(zip::CompressionMethod::Deflated)
-                            .with_aes_encryption(zip::AesMode::Aes256, pw);
+                    let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated)
+                        .with_aes_encryption(zip::AesMode::Aes256, pw);
                     zw.start_file(newname, opts).map_err(zip_err)?;
                     extract::copy_guarded(
                         &mut e,
@@ -1242,7 +1266,10 @@ fn copy_tar_transform<R: Read, W: Write>(
         };
         let mut header = entry.header().clone();
         builder.append_data(&mut header, &newpath, &mut entry)?;
-        progress.emit(ProgressEvent::FileProcessed { name: newpath, index });
+        progress.emit(ProgressEvent::FileProcessed {
+            name: newpath,
+            index,
+        });
         index += 1;
     }
     Ok(())
@@ -1271,7 +1298,12 @@ pub fn has_weak_encryption(archive: &Path) -> Result<bool> {
         encrypted.push(ar.by_index_raw(i).map_err(zip_err)?.encrypted());
     }
     for (i, &enc) in encrypted.iter().enumerate() {
-        if enc && ar.get_aes_verification_key_and_salt(i).map_err(zip_err)?.is_none() {
+        if enc
+            && ar
+                .get_aes_verification_key_and_salt(i)
+                .map_err(zip_err)?
+                .is_none()
+        {
             return Ok(true);
         }
     }
@@ -1421,7 +1453,8 @@ fn zip_add<W: Write + std::io::Seek>(
 
     if path.is_dir() {
         if !name.is_empty() {
-            zw.add_directory(format!("{name}/"), opts).map_err(zip_err)?;
+            zw.add_directory(format!("{name}/"), opts)
+                .map_err(zip_err)?;
         }
         let mut entries: Vec<_> = fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
         entries.sort_by_key(|e| e.path());
@@ -1543,7 +1576,15 @@ fn write_tar_entries<W: Write>(
         let name = input
             .file_name()
             .ok_or_else(|| Error::Other(format!("input tanpa nama: {}", input.display())))?;
-        add_tar_entry(builder, input, Path::new(name), follow, cancel, progress, &mut index)?;
+        add_tar_entry(
+            builder,
+            input,
+            Path::new(name),
+            follow,
+            cancel,
+            progress,
+            &mut index,
+        )?;
     }
     Ok(())
 }
@@ -1569,13 +1610,23 @@ fn add_tar_entry<W: Write>(
     let is_dir = if follow {
         disk.is_dir()
     } else {
-        fs::symlink_metadata(disk).map(|m| m.is_dir()).unwrap_or(false)
+        fs::symlink_metadata(disk)
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
     };
     if is_dir {
         let mut entries: Vec<_> = fs::read_dir(disk)?.filter_map(|e| e.ok()).collect();
         entries.sort_by_key(|e| e.path());
         for e in entries {
-            add_tar_entry(builder, &e.path(), &arc.join(e.file_name()), follow, cancel, progress, index)?;
+            add_tar_entry(
+                builder,
+                &e.path(),
+                &arc.join(e.file_name()),
+                follow,
+                cancel,
+                progress,
+                index,
+            )?;
         }
     } else {
         progress.emit(ProgressEvent::FileProcessed {
@@ -1670,7 +1721,9 @@ fn compress_single(
         ArchiveKind::Gz => Box::new(GzEncoder::new(w, level.flate2())),
         ArchiveKind::Bz2 => Box::new(bzip2::write::BzEncoder::new(w, level.bzip2())),
         ArchiveKind::Xz => Box::new(xz2::write::XzEncoder::new(w, level.xz())),
-        ArchiveKind::Zst => Box::new(zstd::stream::write::Encoder::new(w, level.zstd())?.auto_finish()),
+        ArchiveKind::Zst => {
+            Box::new(zstd::stream::write::Encoder::new(w, level.zstd())?.auto_finish())
+        }
         _ => return Err(Error::UnsupportedFormat),
     };
     // Loop manual (bukan io::copy) agar Cancel bisa menghentikan file besar di

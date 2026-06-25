@@ -131,7 +131,7 @@ mod tests {
         let mut g = DecompressionGuard::new(10);
         g.max_ratio = 100;
         g.ratio_floor = 0; // uji logika rasio murni tanpa floor
-        // 10 * 100 = 1000 (rasio tepat 100) masih ok; di atasnya → bomb.
+                           // 10 * 100 = 1000 (rasio tepat 100) masih ok; di atasnya → bomb.
         assert!(g.add_output(1000).is_ok());
         assert!(g.add_output(100).is_err()); // total 1100 → rasio 110 > 100
     }

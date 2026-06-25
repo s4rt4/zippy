@@ -111,7 +111,9 @@ pub fn sevenzip_compress(
     });
 
     let mut cmd = hardened_command("7z");
-    cmd.arg("a").arg("-y").arg(format!("-mx={}", level.sevenzip_mx()));
+    cmd.arg("a")
+        .arg("-y")
+        .arg(format!("-mx={}", level.sevenzip_mx()));
     // Split ke volume `-v<size>` (mis. `-v100m`). 7z menulis dest.7z.001, dst.
     if let Some(size) = volume {
         cmd.arg(format!("-v{size}"));
@@ -402,9 +404,7 @@ fn run_capture(
         .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            Error::Other(format!("biner backend tidak ditemukan: {e}"))
-        }
+        std::io::ErrorKind::NotFound => Error::Other(format!("biner backend tidak ditemukan: {e}")),
         _ => Error::Io(e),
     })?;
 
@@ -477,14 +477,16 @@ pub fn run_status(
     input: Option<&str>,
     cancel: Option<&CancelToken>,
 ) -> Result<ProcOutput> {
-    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            Error::Other(format!("biner tidak ditemukan: {e}"))
-        }
+        std::io::ErrorKind::NotFound => Error::Other(format!("biner tidak ditemukan: {e}")),
         _ => Error::Io(e),
     })?;
 

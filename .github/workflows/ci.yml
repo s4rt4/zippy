@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          # GTK4/libadwaita untuk frontend; p7zip/zip/unzip untuk test interop.
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev libadwaita-1-dev pkg-config \
+            p7zip-full zip unzip xvfb
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Smoke test GUI (headless, benchmark mode)
+        run: |
+          cargo build --release -p zippy
+          # ZIPPY_BENCH: window settle lalu quit (lihat maybe_bench). Membuktikan
+          # binary GUI benar-benar bisa start di lingkungan tanpa display fisik.
+          # `timeout` sebagai jaring pengaman agar job tak menggantung.
+          timeout 60 xvfb-run -a env ZIPPY_BENCH=1 ./target/release/zippy

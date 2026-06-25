@@ -31,7 +31,9 @@ fn run(prog: &str, args: &[&str], cwd: Option<&Path>) {
     if let Some(d) = cwd {
         c.current_dir(d);
     }
-    let status = c.status().unwrap_or_else(|e| panic!("{prog} tak bisa dijalankan: {e}"));
+    let status = c
+        .status()
+        .unwrap_or_else(|e| panic!("{prog} tak bisa dijalankan: {e}"));
     assert!(status.success(), "{prog} {args:?} keluar dengan {status}");
 }
 
@@ -78,7 +80,11 @@ fn zippy_reads_system_zip() {
     let src = tmp.path().join("src");
     mk_tree(&src);
     let archive = tmp.path().join("ext.zip");
-    run("zip", &["-q", "-r", s(&archive), "a.txt", "sub"], Some(&src));
+    run(
+        "zip",
+        &["-q", "-r", s(&archive), "a.txt", "sub"],
+        Some(&src),
+    );
 
     assert!(!list(&archive, None).unwrap().is_empty());
     let out = tmp.path().join("out");
@@ -197,7 +203,11 @@ fn zippy_7z_opens_in_7z() {
     compress(&inputs, &archive, None, &nocancel(), &NullSink).unwrap();
 
     let out = tmp.path().join("out");
-    run("7z", &["x", "-y", &format!("-o{}", s(&out)), s(&archive)], None);
+    run(
+        "7z",
+        &["x", "-y", &format!("-o{}", s(&out)), s(&archive)],
+        None,
+    );
     check_tree(&out);
 }
 
@@ -240,7 +250,13 @@ fn sevenzip_password_roundtrip() {
     assert!(
         !try_run(
             "7z",
-            &["x", "-y", "-pWRONGPASS", &format!("-o{}", s(&ext)), s(&archive)],
+            &[
+                "x",
+                "-y",
+                "-pWRONGPASS",
+                &format!("-o{}", s(&ext)),
+                s(&archive)
+            ],
             None
         ),
         "7z eksternal harusnya gagal extract dengan password salah"
@@ -248,7 +264,13 @@ fn sevenzip_password_roundtrip() {
 
     // Password salah → Error::Password.
     let wrong = tmp.path().join("wrong");
-    match extract_all(&archive, &wrong, Some("salahbanget"), &nocancel(), &NullSink) {
+    match extract_all(
+        &archive,
+        &wrong,
+        Some("salahbanget"),
+        &nocancel(),
+        &NullSink,
+    ) {
         Err(Error::Password) => {}
         other => panic!("harusnya Error::Password, dapat {other:?}"),
     }
@@ -279,7 +301,14 @@ fn detects_legacy_zipcrypto_as_weak() {
 
     // Bandingkan: arsip AES-256 buatan Zippy → tidak lemah.
     let aes = tmp.path().join("aes.zip");
-    compress(&[file.as_path()], &aes, Some("rahasia"), &nocancel(), &NullSink).unwrap();
+    compress(
+        &[file.as_path()],
+        &aes,
+        Some("rahasia"),
+        &nocancel(),
+        &NullSink,
+    )
+    .unwrap();
     assert!(
         !has_weak_encryption(&aes).unwrap(),
         "AES-256 bukan enkripsi lemah"

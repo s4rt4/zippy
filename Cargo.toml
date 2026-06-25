@@ -5,7 +5,7 @@ members  = ["core", "frontend-gtk"]
 resolver = "2"
 
 [workspace.package]
-version = "0.0.0"          # Sprint 0 — baseline & scaffold
+version = "0.4.0"          # v0.4 — fitur WinRAR (Gelombang 1-3) + folder tree
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/s4rt4/zippy"

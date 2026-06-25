@@ -1,10 +1,15 @@
 # Zippy
 
+[![CI](https://github.com/s4rt4/zippy/actions/workflows/ci.yml/badge.svg)](https://github.com/s4rt4/zippy/actions/workflows/ci.yml)
+
 > Archive manager untuk Linux — seringan & seresponsif WinRAR, dengan context
 > menu klik-kanan yang kaya. Ditulis dengan **Rust + GTK4 / libadwaita**.
 
-**Status:** v0.1 (Sprint 1-3) sedang berjalan — **core engine native sudah
-berfungsi & teruji**. Frontend GTK4 masih window kosong (v0.2).
+**Status: v0.4** — UI gaya WinRAR (toolbar berikon, folder tree, context menu
+kondisional) + fitur lengkap: compress/extract/test/delete/rename in-archive,
+convert, SFX (.sh), komentar ZIP, repair (zip -FF/PAR2), scan virus (ClamAV),
+split volume, overwrite-mode, profil kompresi, name-encoding. Pemetaan fitur
+WinRAR→Linux: [`docs/winrar-feature-map.md`](docs/winrar-feature-map.md).
 
 ### Format yang sudah berfungsi di core
 

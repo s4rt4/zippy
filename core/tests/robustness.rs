@@ -18,7 +18,10 @@ use zippy_core::{CancelToken, NullSink};
 struct Lcg(u64);
 impl Lcg {
     fn next_u32(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 32) as u32
     }
     fn byte(&mut self) -> u8 {
@@ -123,7 +126,8 @@ fn list_never_panics_on_garbage_and_truncations() {
 
     for ext in ["zip", "tar", "tar.gz", "tar.zst"] {
         let archive = tmp.path().join(format!("valid.{ext}"));
-        zippy_core::archive::compress(&refs, &archive, None, &CancelToken::new(), &NullSink).unwrap();
+        zippy_core::archive::compress(&refs, &archive, None, &CancelToken::new(), &NullSink)
+            .unwrap();
         let full = std::fs::read(&archive).unwrap();
 
         // Potong di banyak panjang berbeda (langkah cukup halus di awal).

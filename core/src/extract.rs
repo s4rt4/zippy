@@ -60,7 +60,7 @@ pub(crate) fn ext_prohibited(name: &str, prohibited: &[String]) -> bool {
     match Path::new(name).extension().and_then(|e| e.to_str()) {
         Some(e) => {
             let e = e.to_ascii_lowercase();
-            prohibited.iter().any(|p| *p == e)
+            prohibited.contains(&e)
         }
         None => false,
     }
@@ -166,6 +166,8 @@ pub(crate) fn extract_tar<R: Read>(
     progress.emit(ProgressEvent::Started { total_files: 0 });
 
     let mut index = 0;
+    // `index` hanya untuk progress; entri tar di-stream, bukan diindeks.
+    #[allow(clippy::explicit_counter_loop)]
     for entry in ar.entries()? {
         cancel.check()?;
         let mut entry = entry?;
@@ -260,12 +262,19 @@ mod tests {
     fn resolve_dest_prohibited_ext_is_skipped() {
         let tmp = tempfile::tempdir().unwrap();
         let banned = vec!["desktop".to_string(), "sh".to_string()];
-        assert!(resolve_dest(tmp.path(), "evil.desktop", OverwriteMode::Overwrite, &banned)
-            .unwrap()
-            .is_none());
-        assert!(resolve_dest(tmp.path(), "ok.txt", OverwriteMode::Overwrite, &banned)
-            .unwrap()
-            .is_some());
+        assert!(resolve_dest(
+            tmp.path(),
+            "evil.desktop",
+            OverwriteMode::Overwrite,
+            &banned
+        )
+        .unwrap()
+        .is_none());
+        assert!(
+            resolve_dest(tmp.path(), "ok.txt", OverwriteMode::Overwrite, &banned)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -274,7 +283,10 @@ mod tests {
         let out = tmp.path().join("partial.bin");
         let token = CancelToken::new();
         let mut guard = DecompressionGuard::new(1024);
-        let mut reader = CancelOnRead { token: &token, done: false };
+        let mut reader = CancelOnRead {
+            token: &token,
+            done: false,
+        };
 
         let err = copy_guarded_to_file(&mut reader, &out, &mut guard, &token).unwrap_err();
         assert!(matches!(err, Error::Cancelled), "dapat {err:?}");

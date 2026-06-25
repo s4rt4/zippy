@@ -91,7 +91,10 @@ fn verb_extract(archives: &[String], mode: ExtractMode) -> ExitCode {
         match zippy_core::archive::extract_all(archive, &dest, None, &cancel, &CliSink) {
             Ok(()) => {}
             Err(Error::Password) => {
-                eprintln!("  ! terenkripsi — buka via GUI: zippy {}", archive.display());
+                eprintln!(
+                    "  ! terenkripsi — buka via GUI: zippy {}",
+                    archive.display()
+                );
                 failed = true;
             }
             Err(e) => {
@@ -227,7 +230,10 @@ fn exit(failed: bool) -> ExitCode {
 }
 
 fn print_help() {
-    println!("Zippy {} — archive manager untuk Linux", zippy_core::VERSION);
+    println!(
+        "Zippy {} — archive manager untuk Linux",
+        zippy_core::VERSION
+    );
     println!();
     println!("PENGGUNAAN:");
     println!("  zippy                       Buka GUI");
