@@ -7,6 +7,7 @@
 mod cli;
 mod config;
 mod file_list;
+mod i18n;
 mod progress;
 mod tree;
 mod window;

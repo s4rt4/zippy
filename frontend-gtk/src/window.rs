@@ -24,6 +24,7 @@ use zippy_core::{
 
 use crate::config::{self, Config};
 use crate::file_list::{self, FileListView, Row};
+use crate::i18n::{self, t, tf, LangPref};
 use crate::progress::ChannelSink;
 
 /// Nama ikon aplikasi (themed). Lihat [`setup_icon_theme`].
@@ -106,6 +107,7 @@ pub fn build_ui(app: &adw::Application) {
     // Daftarkan ikon embedded + terapkan tema sebelum membangun widget.
     setup_icon_theme();
     let cfg = Config::load();
+    i18n::init(cfg.language);
     apply_scheme(cfg.scheme);
 
     let list = file_list::build();
@@ -138,7 +140,7 @@ pub fn build_ui(app: &adw::Application) {
         .build();
     let cancel_btn = gtk::Button::builder()
         .icon_name("process-stop")
-        .tooltip_text("Batalkan operasi")
+        .tooltip_text(t("Batalkan operasi"))
         .build();
     cancel_btn.add_css_class("flat");
     let progress_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -158,11 +160,11 @@ pub fn build_ui(app: &adw::Application) {
         .build();
 
     // Toolbar: tombol Extract perlu referensi untuk enable/disable.
-    let extract_btn = tool_button("zippy-extract", "Extract To");
+    let extract_btn = tool_button("zippy-extract", t("Extract"));
 
     // Search bar (Find): tersembunyi sampai diaktifkan tombol/menu Find.
     let search_entry = gtk::SearchEntry::builder()
-        .placeholder_text("Filter berkas di folder ini…")
+        .placeholder_text(t("Filter berkas di folder ini…"))
         .hexpand(true)
         .build();
     let search_bar = gtk::SearchBar::builder()
@@ -262,7 +264,7 @@ pub fn build_ui(app: &adw::Application) {
                 token.cancel();
             }
             btn.set_sensitive(false);
-            ui.progress_label.set_text("Membatalkan…");
+            ui.progress_label.set_text(t("Membatalkan…"));
         }
     });
 
@@ -353,6 +355,19 @@ pub fn set_initial_compress(inputs: Vec<PathBuf>) {
     INITIAL_COMPRESS.with(|c| *c.borrow_mut() = Some(inputs));
 }
 
+/// Bangun ulang window utama dari awal — dipakai saat user mengganti bahasa di
+/// Preferensi (penerapan "live"). Arsip yang sedang terbuka dibuka kembali.
+fn rebuild_window(ui: &Rc<Ui>) {
+    let Some(app) = ui.window.application().and_downcast::<adw::Application>() else {
+        return;
+    };
+    if let Some(p) = ui.current.borrow().clone() {
+        set_initial_archive(p);
+    }
+    ui.window.destroy();
+    build_ui(&app);
+}
+
 // ---------------------------------------------------------------------------
 // Menu bar
 // ---------------------------------------------------------------------------
@@ -415,56 +430,56 @@ fn build_menubar(ui: &Rc<Ui>) -> gtk::PopoverMenuBar {
 
     let file = gio::Menu::new();
     let file_open = gio::Menu::new();
-    file_open.append(Some("Buka Archive…"), Some("win.open"));
-    file_open.append(Some("Simpan Salinan Archive…"), Some("win.save_copy"));
-    file_open.append(Some("Set Password Default…"), Some("win.set_pw"));
-    file_open.append(Some("Tutup Archive"), Some("win.close"));
+    file_open.append(Some(t("Buka Archive…")), Some("win.open"));
+    file_open.append(Some(t("Simpan Salinan Archive…")), Some("win.save_copy"));
+    file_open.append(Some(t("Set Password Default…")), Some("win.set_pw"));
+    file_open.append(Some(t("Tutup Archive")), Some("win.close"));
     file.append_section(None, &file_open);
     let file_sel = gio::Menu::new();
-    file_sel.append(Some("Pilih Semua"), Some("win.select_all"));
-    file_sel.append(Some("Balik Seleksi"), Some("win.invert_sel"));
+    file_sel.append(Some(t("Pilih Semua")), Some("win.select_all"));
+    file_sel.append(Some(t("Balik Seleksi")), Some("win.invert_sel"));
     file.append_section(None, &file_sel);
     let file_exit = gio::Menu::new();
-    file_exit.append(Some("Keluar"), Some("win.quit"));
+    file_exit.append(Some(t("Keluar")), Some("win.quit"));
     file.append_section(None, &file_exit);
-    menu.append_submenu(Some("File"), &file);
+    menu.append_submenu(Some(t("Berkas")), &file);
 
     let cmds = gio::Menu::new();
-    cmds.append(Some("Tambah Berkas…"), Some("win.add"));
-    cmds.append(Some("Extract Ke…"), Some("win.extract"));
-    cmds.append(Some("Test"), Some("win.test"));
-    cmds.append(Some("Ganti Nama…"), Some("win.rename"));
-    cmds.append(Some("Hapus"), Some("win.delete"));
-    cmds.append(Some("Komentar Archive…"), Some("win.comment"));
-    menu.append_submenu(Some("Commands"), &cmds);
+    cmds.append(Some(t("Tambah Berkas…")), Some("win.add"));
+    cmds.append(Some(t("Extract Ke…")), Some("win.extract"));
+    cmds.append(Some(t("Test")), Some("win.test"));
+    cmds.append(Some(t("Ganti Nama…")), Some("win.rename"));
+    cmds.append(Some(t("Hapus")), Some("win.delete"));
+    cmds.append(Some(t("Komentar Archive…")), Some("win.comment"));
+    menu.append_submenu(Some(t("Perintah")), &cmds);
 
     let tools = gio::Menu::new();
-    tools.append(Some("Wizard"), Some("win.wizard"));
-    tools.append(Some("Pindai Virus…"), Some("win.scan"));
-    tools.append(Some("Perbaiki Arsip…"), Some("win.repair"));
-    tools.append(Some("Convert Archive…"), Some("win.convert"));
-    tools.append(Some("Buat SFX (.sh)…"), Some("win.sfx"));
-    tools.append(Some("Buat Laporan…"), Some("win.report"));
-    tools.append(Some("Cari…"), Some("win.find"));
-    menu.append_submenu(Some("Tools"), &tools);
+    tools.append(Some(t("Wizard")), Some("win.wizard"));
+    tools.append(Some(t("Pindai Virus…")), Some("win.scan"));
+    tools.append(Some(t("Perbaiki Arsip…")), Some("win.repair"));
+    tools.append(Some(t("Convert Archive…")), Some("win.convert"));
+    tools.append(Some(t("Buat SFX (.sh)…")), Some("win.sfx"));
+    tools.append(Some(t("Buat Laporan…")), Some("win.report"));
+    tools.append(Some(t("Cari…")), Some("win.find"));
+    menu.append_submenu(Some(t("Alat")), &tools);
 
-    menu.append_submenu(Some("Favorites"), &ui.favorites_menu);
+    menu.append_submenu(Some(t("Favorit")), &ui.favorites_menu);
     refresh_favorites_menu(ui);
 
     let options = gio::Menu::new();
     options.append(
-        Some("Folder Tree (tampil/sembunyi)"),
+        Some(t("Folder Tree (tampil/sembunyi)")),
         Some("win.toggle_tree"),
     );
-    options.append(Some("Preferensi…"), Some("win.options"));
-    options.append(Some("Profil Kompresi…"), Some("win.profiles"));
-    options.append(Some("Penyandian Nama…"), Some("win.encoding"));
-    options.append(Some("Lihat Log…"), Some("win.log"));
-    menu.append_submenu(Some("Options"), &options);
+    options.append(Some(t("Preferensi…")), Some("win.options"));
+    options.append(Some(t("Profil Kompresi…")), Some("win.profiles"));
+    options.append(Some(t("Penyandian Nama…")), Some("win.encoding"));
+    options.append(Some(t("Lihat Log…")), Some("win.log"));
+    menu.append_submenu(Some(t("Opsi")), &options);
 
     let help = gio::Menu::new();
-    help.append(Some("Tentang Zippy"), Some("win.about"));
-    menu.append_submenu(Some("Help"), &help);
+    help.append(Some(t("Tentang Zippy")), Some("win.about"));
+    menu.append_submenu(Some(t("Bantuan")), &help);
 
     gtk::PopoverMenuBar::from_model(Some(&menu))
 }
@@ -475,9 +490,9 @@ fn refresh_favorites_menu(ui: &Rc<Ui>) {
     m.remove_all();
 
     let actions = gio::Menu::new();
-    actions.append(Some("Tambah arsip saat ini"), Some("win.fav_add"));
-    actions.append(Some("Hapus arsip saat ini"), Some("win.fav_remove"));
-    actions.append(Some("Kelola Favorit…"), Some("win.fav_manage"));
+    actions.append(Some(t("Tambah arsip saat ini")), Some("win.fav_add"));
+    actions.append(Some(t("Hapus arsip saat ini")), Some("win.fav_remove"));
+    actions.append(Some(t("Kelola Favorit…")), Some("win.fav_manage"));
     m.append_section(None, &actions);
 
     let favs = config::favorites_load();
@@ -495,17 +510,17 @@ fn refresh_favorites_menu(ui: &Rc<Ui>) {
         item.set_action_and_target_value(Some("win.fav_open"), Some(&target));
         list.append_item(&item);
     }
-    m.append_section(Some("Tersimpan"), &list);
+    m.append_section(Some(t("Tersimpan")), &list);
 }
 
 fn fav_add_current(ui: &Rc<Ui>) {
     let Some(path) = ui.current.borrow().clone() else {
-        warn(ui, "Buka arsip dulu sebelum menambah ke Favorit");
+        warn(ui, t("Buka arsip dulu sebelum menambah ke Favorit"));
         return;
     };
     config::favorites_add(&path);
     refresh_favorites_menu(ui);
-    show_toast(ui, "Ditambahkan ke Favorit");
+    show_toast(ui, t("Ditambahkan ke Favorit"));
 }
 
 fn fav_remove_current(ui: &Rc<Ui>) {
@@ -513,12 +528,12 @@ fn fav_remove_current(ui: &Rc<Ui>) {
         return;
     };
     if !config::favorites_contains(&path) {
-        warn(ui, "Arsip ini tidak ada di Favorit");
+        warn(ui, t("Arsip ini tidak ada di Favorit"));
         return;
     }
     config::favorites_remove(&path);
     refresh_favorites_menu(ui);
-    show_toast(ui, "Dihapus dari Favorit");
+    show_toast(ui, t("Dihapus dari Favorit"));
 }
 
 /// Dialog kelola favorit: daftar dengan tombol buka & hapus per baris.
@@ -526,22 +541,24 @@ fn show_favorites_manager(ui: &Rc<Ui>) {
     let win = adw::PreferencesWindow::builder()
         .transient_for(&ui.window)
         .modal(true)
-        .title("Kelola Favorit")
+        .title(t("Kelola Favorit"))
         .search_enabled(false)
         .build();
     win.set_default_size(460, 420);
 
     let page = adw::PreferencesPage::new();
     let group = adw::PreferencesGroup::builder()
-        .title("Arsip Favorit")
-        .description("Klik baris untuk membuka, atau tombol hapus untuk membuang.")
+        .title(t("Arsip Favorit"))
+        .description(t(
+            "Klik baris untuk membuka, atau tombol hapus untuk membuang.",
+        ))
         .build();
 
     let favs = config::favorites_load();
     if favs.is_empty() {
         let empty = adw::ActionRow::builder()
-            .title("Belum ada favorit")
-            .subtitle("Tambahkan lewat menu Favorites → Tambah arsip saat ini")
+            .title(t("Belum ada favorit"))
+            .subtitle(t("Tambahkan lewat menu Favorit → Tambah arsip saat ini"))
             .build();
         group.add(&empty);
     } else {
@@ -559,7 +576,7 @@ fn show_favorites_manager(ui: &Rc<Ui>) {
 
             let remove = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
-                .tooltip_text("Hapus dari Favorit")
+                .tooltip_text(t("Hapus dari Favorit"))
                 .valign(gtk::Align::Center)
                 .build();
             remove.add_css_class("flat");
@@ -615,7 +632,7 @@ fn build_toolbar(ui: &Rc<Ui>, extract_btn: &gtk::Button) -> gtk::Box {
     bar.set_margin_top(4);
     bar.set_margin_bottom(4);
 
-    let add = tool_button("zippy-add", "Add");
+    let add = tool_button("zippy-add", t("Tambah"));
     add.connect_clicked({
         let ui = ui.clone();
         move |_| compress_dialog(&ui)
@@ -626,42 +643,42 @@ fn build_toolbar(ui: &Rc<Ui>, extract_btn: &gtk::Button) -> gtk::Box {
     });
     extract_btn.set_sensitive(false);
 
-    let test = tool_button("zippy-test", "Test");
+    let test = tool_button("zippy-test", t("Test"));
     test.connect_clicked({
         let ui = ui.clone();
         move |_| test_dialog(&ui)
     });
-    let view = tool_button("zippy-view", "View");
+    let view = tool_button("zippy-view", t("Lihat"));
     view.connect_clicked({
         let ui = ui.clone();
         move |_| view_selected(&ui)
     });
-    let delete = tool_button("zippy-delete", "Delete");
+    let delete = tool_button("zippy-delete", t("Hapus"));
     delete.connect_clicked({
         let ui = ui.clone();
         move |_| delete_selected(&ui)
     });
-    let find = tool_button("zippy-find", "Find");
+    let find = tool_button("zippy-find", t("Cari"));
     find.connect_clicked({
         let ui = ui.clone();
         move |_| toggle_search(&ui)
     });
-    let repair = tool_button("zippy-repair", "Repair");
+    let repair = tool_button("zippy-repair", t("Perbaiki"));
     repair.connect_clicked({
         let ui = ui.clone();
         move |_| repair_dialog(&ui)
     });
-    let scan = tool_button("zippy-scan", "Scan");
+    let scan = tool_button("zippy-scan", t("Pindai"));
     scan.connect_clicked({
         let ui = ui.clone();
         move |_| scan_dialog(&ui)
     });
-    let wizard = tool_button("zippy-wizard", "Wizard");
+    let wizard = tool_button("zippy-wizard", t("Wizard"));
     wizard.connect_clicked({
         let ui = ui.clone();
         move |_| show_wizard(&ui)
     });
-    let info = tool_button("zippy-info", "Info");
+    let info = tool_button("zippy-info", t("Info"));
     info.connect_clicked({
         let ui = ui.clone();
         move |_| show_about(&ui)
@@ -808,9 +825,13 @@ fn render(ui: &Rc<Ui>) {
         ui.list.store.append(&file_list::EntryObject::from_row(r));
     }
 
-    ui.status.set_text(&format!(
-        "Total {folders} folder dan {} bita dalam {files} berkas",
-        file_list::group_thousands(bytes)
+    ui.status.set_text(&tf(
+        "Total {} folder dan {} bita dalam {} berkas",
+        &[
+            folders.to_string().as_str(),
+            file_list::group_thousands(bytes).as_str(),
+            files.to_string().as_str(),
+        ],
     ));
     update_address(ui, &entries, &cwd);
 }
@@ -818,7 +839,7 @@ fn render(ui: &Rc<Ui>) {
 fn update_address(ui: &Rc<Ui>, entries: &[Entry], cwd: &[String]) {
     let current = ui.current.borrow();
     let Some(path) = current.as_ref() else {
-        ui.address.set_text("Tidak ada archive terbuka");
+        ui.address.set_text(t("Tidak ada archive terbuka"));
         return;
     };
     let name = path
@@ -832,9 +853,13 @@ fn update_address(ui: &Rc<Ui>, entries: &[Entry], cwd: &[String]) {
     };
     let kind = kind_label(path);
     let total: u64 = entries.iter().filter(|e| !e.is_dir).map(|e| e.size).sum();
-    ui.address.set_text(&format!(
-        "{shown} - {kind} archive, unpacked size {} bytes",
-        file_list::group_thousands(total)
+    ui.address.set_text(&tf(
+        "{} - arsip {}, ukuran asli {} bita",
+        &[
+            shown.as_str(),
+            kind.as_str(),
+            file_list::group_thousands(total).as_str(),
+        ],
     ));
 }
 
@@ -863,7 +888,7 @@ fn kind_label(path: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 fn open_dialog(ui: &Rc<Ui>) {
-    let dialog = gtk::FileDialog::builder().title("Buka Archive").build();
+    let dialog = gtk::FileDialog::builder().title(t("Buka Archive")).build();
     let win = ui.window.clone();
     let ui = ui.clone();
     dialog.open(Some(&win), gio::Cancellable::NONE, move |res| {
@@ -876,7 +901,8 @@ fn open_dialog(ui: &Rc<Ui>) {
 }
 
 fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
-    ui.status.set_text(&format!("Membaca {}…", path.display()));
+    ui.status
+        .set_text(&tf("Membaca {}…", &[path.display().to_string().as_str()]));
     let encoding = ui.config.borrow().name_encoding;
     let (tx, rx) = async_channel::bounded(1);
     let worker_path = path.clone();
@@ -907,7 +933,7 @@ fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
                 if weak {
                     show_toast(
                         &ui,
-                        "⚠ Archive memakai enkripsi ZipCrypto lemah — pertimbangkan ulang dengan AES-256",
+                        t("⚠ Archive memakai enkripsi ZipCrypto lemah — pertimbangkan ulang dengan AES-256"),
                     );
                 }
                 if let Some(dir) = std::env::var_os("ZIPPY_EXTRACT_TO") {
@@ -925,8 +951,8 @@ fn load_archive(ui: &Rc<Ui>, path: PathBuf) {
                 }
             }
             Ok((Err(e), _)) => {
-                ui.status.set_text("Gagal membuka archive");
-                warn(&ui, &format!("Gagal membuka: {e}"));
+                ui.status.set_text(t("Gagal membuka archive"));
+                warn(&ui, &tf("Gagal membuka: {}", &[e.to_string().as_str()]));
             }
             Err(_) => {}
         }
@@ -960,13 +986,13 @@ fn extract_dialog(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            warn(ui, "Belum ada archive terbuka");
+            warn(ui, t("Belum ada archive terbuka"));
             return;
         }
     };
 
     let dialog = gtk::FileDialog::builder()
-        .title("Extract ke folder…")
+        .title(t("Extract ke folder…"))
         .build();
     let win = ui.window.clone();
     let ui = ui.clone();
@@ -1001,13 +1027,17 @@ fn count_conflicts(entries: &[Entry], dest: &Path) -> usize {
 
 /// Dialog pilihan kebijakan overwrite saat ada konflik berkas.
 fn ask_overwrite_mode(ui: &Rc<Ui>, archive: PathBuf, dest: PathBuf, conflicts: usize) {
-    let body = format!("{conflicts} berkas sudah ada di folder tujuan.\nPilih cara menanganinya:");
-    let dialog = adw::MessageDialog::new(Some(&ui.window), Some("Berkas Sudah Ada"), Some(&body));
+    let body = tf(
+        "{} berkas sudah ada di folder tujuan.\nPilih cara menanganinya:",
+        &[conflicts.to_string().as_str()],
+    );
+    let dialog =
+        adw::MessageDialog::new(Some(&ui.window), Some(t("Berkas Sudah Ada")), Some(&body));
     set_dialog_icon(&dialog, "zippy-bad");
-    dialog.add_response("cancel", "Batal");
-    dialog.add_response("skip", "Lewati");
-    dialog.add_response("rename", "Beri Nama Baru");
-    dialog.add_response("overwrite", "Timpa Semua");
+    dialog.add_response("cancel", t("Batal"));
+    dialog.add_response("skip", t("Lewati"));
+    dialog.add_response("rename", t("Beri Nama Baru"));
+    dialog.add_response("overwrite", t("Timpa Semua"));
     dialog.set_response_appearance("overwrite", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("overwrite"));
     dialog.set_close_response("cancel");
@@ -1064,7 +1094,7 @@ fn run_extract(
     ui.revealer.set_reveal_child(true);
     ui.cancel_btn.set_sensitive(true);
     ui.bar.set_fraction(0.0);
-    ui.progress_label.set_text("Memulai…");
+    ui.progress_label.set_text(t("Memulai…"));
     schedule_dev_cancel(ui);
 
     let ui = ui.clone();
@@ -1097,10 +1127,16 @@ fn run_extract(
         *ui.cancel.borrow_mut() = None;
         match rx_done.recv().await {
             Ok(Ok(())) => {
-                show_toast_open_folder(&ui, "Extract selesai", dest.clone());
+                show_toast_open_folder(&ui, t("Extract selesai"), dest.clone());
                 log_event(
                     &ui,
-                    &format!("Extract: {} → {}", archive.display(), dest.display()),
+                    &tf(
+                        "Extract: {} → {}",
+                        &[
+                            archive.display().to_string().as_str(),
+                            dest.display().to_string().as_str(),
+                        ],
+                    ),
                 );
                 tracing::info!("extract selesai");
                 // Hapus arsip ke Trash setelah sukses (bila diaktifkan & arsip
@@ -1110,7 +1146,7 @@ fn run_extract(
                 }
             }
             Ok(Err(Error::Cancelled)) => {
-                show_toast(&ui, "Extract dibatalkan");
+                show_toast(&ui, t("Extract dibatalkan"));
                 tracing::info!("extract dibatalkan");
             }
             Ok(Err(Error::Password)) => {
@@ -1118,7 +1154,7 @@ fn run_extract(
                 prompt_password(&ui, &archive, &dest, mode);
             }
             Ok(Err(e)) => {
-                show_result_dialog(&ui, Notif::Bad, "Extract Gagal", &e.to_string());
+                show_result_dialog(&ui, Notif::Bad, t("Extract Gagal"), &e.to_string());
                 tracing::error!(error = %e, "extract gagal");
             }
             Err(_) => {}
@@ -1142,7 +1178,7 @@ where
         .build();
     let dialog = adw::MessageDialog::new(Some(&ui.window), Some(heading), Some(body));
     dialog.set_extra_child(Some(&icon_with("zippy-info", &entry)));
-    dialog.add_response("cancel", "Batal");
+    dialog.add_response("cancel", t("Batal"));
     dialog.add_response("ok", ok_label);
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("ok"));
@@ -1169,12 +1205,12 @@ fn prompt_password(ui: &Rc<Ui>, archive: &Path, dest: &Path, mode: OverwriteMode
     let dest = dest.to_path_buf();
     ask_password(
         ui,
-        "Archive Terenkripsi",
-        &format!("Masukkan password untuk \"{name}\"."),
-        "Buka",
+        t("Archive Terenkripsi"),
+        &tf("Masukkan password untuk \"{}\".", &[name.as_str()]),
+        t("Buka"),
         move |ui, pw| match pw {
             Some(pw) => run_extract(ui, archive.clone(), dest.clone(), Some(pw), mode),
-            None => warn(ui, "Password kosong"),
+            None => warn(ui, t("Password kosong")),
         },
     );
 }
@@ -1188,18 +1224,18 @@ fn prompt_password(ui: &Rc<Ui>, archive: &Path, dest: &Path, mode: OverwriteMode
 fn set_default_password(ui: &Rc<Ui>) {
     ask_password(
         ui,
-        "Password Default",
-        "Dipakai otomatis untuk extract/test/view arsip terenkripsi (sesi ini saja).",
-        "Simpan",
+        t("Password Default"),
+        t("Dipakai otomatis untuk extract/test/view arsip terenkripsi (sesi ini saja)."),
+        t("Simpan"),
         |ui, pw| {
             let set = pw.is_some();
             *ui.default_password.borrow_mut() = pw;
             show_toast(
                 ui,
                 if set {
-                    "Password default diset"
+                    t("Password default diset")
                 } else {
-                    "Password default dikosongkan"
+                    t("Password default dikosongkan")
                 },
             );
         },
@@ -1211,12 +1247,12 @@ fn save_archive_copy(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            warn(ui, "Belum ada archive terbuka");
+            warn(ui, t("Belum ada archive terbuka"));
             return;
         }
     };
     let dialog = gtk::FileDialog::builder()
-        .title("Simpan salinan archive sebagai…")
+        .title(t("Simpan salinan archive sebagai…"))
         .build();
     if let Some(name) = archive.file_name() {
         dialog.set_initial_name(Some(&name.to_string_lossy()));
@@ -1227,12 +1263,12 @@ fn save_archive_copy(ui: &Rc<Ui>) {
         if let Ok(file) = res {
             if let Some(dest) = file.path() {
                 if dest == archive {
-                    warn(&ui, "Tujuan sama dengan sumber");
+                    warn(&ui, t("Tujuan sama dengan sumber"));
                     return;
                 }
                 match std::fs::copy(&archive, &dest) {
-                    Ok(_) => show_toast(&ui, "Salinan archive disimpan"),
-                    Err(e) => warn(&ui, &format!("Gagal menyimpan: {e}")),
+                    Ok(_) => show_toast(&ui, t("Salinan archive disimpan")),
+                    Err(e) => warn(&ui, &tf("Gagal menyimpan: {}", &[e.to_string().as_str()])),
                 }
             }
         }
@@ -1244,13 +1280,13 @@ fn generate_report(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            warn(ui, "Belum ada archive terbuka");
+            warn(ui, t("Belum ada archive terbuka"));
             return;
         }
     };
     let entries = ui.entries.borrow().clone();
     if entries.is_empty() {
-        warn(ui, "Archive kosong");
+        warn(ui, t("Archive kosong"));
         return;
     }
     let report = build_report(&archive, &entries);
@@ -1258,7 +1294,9 @@ fn generate_report(ui: &Rc<Ui>) {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("archive");
-    let dialog = gtk::FileDialog::builder().title("Simpan laporan…").build();
+    let dialog = gtk::FileDialog::builder()
+        .title(t("Simpan laporan…"))
+        .build();
     dialog.set_initial_name(Some(&format!("{stem}-laporan.txt")));
     let win = ui.window.clone();
     let ui = ui.clone();
@@ -1268,9 +1306,12 @@ fn generate_report(ui: &Rc<Ui>) {
                 match std::fs::write(&dest, report.as_bytes()) {
                     Ok(_) => {
                         let dir = dest.parent().map(Path::to_path_buf).unwrap_or(dest);
-                        show_toast_open_folder(&ui, "Laporan disimpan", dir);
+                        show_toast_open_folder(&ui, t("Laporan disimpan"), dir);
                     }
-                    Err(e) => warn(&ui, &format!("Gagal menulis laporan: {e}")),
+                    Err(e) => warn(
+                        &ui,
+                        &tf("Gagal menulis laporan: {}", &[e.to_string().as_str()]),
+                    ),
                 }
             }
         }
@@ -1285,25 +1326,28 @@ fn build_report(archive: &Path, entries: &[Entry]) -> String {
     let dirs = entries.iter().filter(|e| e.is_dir).count();
 
     let mut s = String::new();
-    s.push_str(&format!(
-        "Laporan Archive — Zippy v{}\n",
-        zippy_core::VERSION
+    s.push_str(&tf("Laporan Archive — Zippy v{}\n", &[zippy_core::VERSION]));
+    s.push_str(&tf(
+        "Archive : {}\n",
+        &[archive.display().to_string().as_str()],
     ));
-    s.push_str(&format!("Archive : {}\n", archive.display()));
-    s.push_str(&format!("Berkas  : {files}   Folder: {dirs}\n"));
-    s.push_str(&format!(
+    s.push_str(&tf(
+        "Berkas  : {}   Folder: {}\n",
+        &[files.to_string().as_str(), dirs.to_string().as_str()],
+    ));
+    s.push_str(&tf(
         "Ukuran  : {} bytes (packed {} bytes",
-        file_list::group_thousands(total),
-        file_list::group_thousands(packed)
+        &[
+            file_list::group_thousands(total).as_str(),
+            file_list::group_thousands(packed).as_str(),
+        ],
     ));
     if total > 0 {
-        s.push_str(&format!(
-            ", rasio {:.1}%",
-            packed as f64 / total as f64 * 100.0
-        ));
+        let pct = format!("{:.1}", packed as f64 / total as f64 * 100.0);
+        s.push_str(&tf(", rasio {}%", &[pct.as_str()]));
     }
     s.push_str(")\n\n");
-    s.push_str("Nama\tUkuran\tPacked\tModified\tCRC32\n");
+    s.push_str(t("Nama\tUkuran\tPacked\tModified\tCRC32\n"));
     for e in entries {
         let crc = e.crc32.map(|c| format!("{c:08X}")).unwrap_or_default();
         s.push_str(&format!(
@@ -1355,7 +1399,7 @@ fn invert_selection(ui: &Rc<Ui>) {
 
 fn compress_dialog(ui: &Rc<Ui>) {
     let dialog = gtk::FileDialog::builder()
-        .title("Pilih berkas/folder untuk diarsipkan")
+        .title(t("Pilih berkas/folder untuk diarsipkan"))
         .build();
     let win = ui.window.clone();
     let ui = ui.clone();
@@ -1371,7 +1415,7 @@ fn compress_dialog(ui: &Rc<Ui>) {
 
 fn choose_output(ui: &Rc<Ui>, inputs: Vec<PathBuf>) {
     let save = gtk::FileDialog::builder()
-        .title("Simpan archive sebagai…")
+        .title(t("Simpan archive sebagai…"))
         .initial_name("archive.zip")
         .build();
     let win = ui.window.clone();
@@ -1386,7 +1430,14 @@ fn choose_output(ui: &Rc<Ui>, inputs: Vec<PathBuf>) {
 }
 
 /// Urutan item dropdown level ↔ [`Level`] core. Indeks dipakai dua arah.
-const LEVEL_LABELS: [&str; 4] = ["Simpan (tanpa kompresi)", "Cepat", "Normal", "Maksimal"];
+fn level_labels() -> [&'static str; 4] {
+    [
+        t("Simpan (tanpa kompresi)"),
+        t("Cepat"),
+        t("Normal"),
+        t("Maksimal"),
+    ]
+}
 
 fn level_from_index(i: u32) -> Level {
     match i {
@@ -1433,11 +1484,11 @@ fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
 
-    let level_dropdown = gtk::DropDown::from_strings(&LEVEL_LABELS);
+    let level_dropdown = gtk::DropDown::from_strings(&level_labels());
     level_dropdown.set_selected(index_from_level(ui.config.borrow().level));
     if supports_level {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        row.append(&gtk::Label::new(Some("Tingkat kompresi:")));
+        row.append(&gtk::Label::new(Some(t("Tingkat kompresi:"))));
         level_dropdown.set_hexpand(true);
         row.append(&level_dropdown);
         content.append(&row);
@@ -1446,12 +1497,12 @@ fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
     // Profil kompresi: pilih untuk menerapkan level tersimpan.
     let profiles = ui.config.borrow().profiles.clone();
     if supports_level && !profiles.is_empty() {
-        let mut labels = vec!["(Custom)".to_string()];
+        let mut labels = vec![t("(Custom)").to_string()];
         labels.extend(profiles.iter().map(|(n, _)| n.clone()));
         let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
         let prof_dd = gtk::DropDown::from_strings(&label_refs);
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        row.append(&gtk::Label::new(Some("Profil:")));
+        row.append(&gtk::Label::new(Some(t("Profil:"))));
         prof_dd.set_hexpand(true);
         row.append(&prof_dd);
         content.append(&row);
@@ -1472,30 +1523,30 @@ fn compress_to(ui: &Rc<Ui>, inputs: Vec<PathBuf>, dest: PathBuf) {
         .activates_default(true)
         .build();
     if supports_pw {
-        pw_entry.set_placeholder_text(Some("Password AES-256 (opsional)"));
+        pw_entry.set_placeholder_text(Some(t("Password AES-256 (opsional)")));
         content.append(&pw_entry);
     }
 
     // Split ke volume (7z): ukuran seperti "100m", "700m", "4g".
     let vol_entry = gtk::Entry::new();
     if is_7z {
-        vol_entry.set_placeholder_text(Some("Split ukuran volume mis. 100m (opsional)"));
+        vol_entry.set_placeholder_text(Some(t("Split ukuran volume mis. 100m (opsional)")));
         content.append(&vol_entry);
     }
 
     // Simpan symlink sebagai link (tar).
-    let sym_check = gtk::CheckButton::with_label("Simpan symlink sebagai link (bukan isinya)");
+    let sym_check = gtk::CheckButton::with_label(t("Simpan symlink sebagai link (bukan isinya)"));
     if is_tar {
         content.append(&sym_check);
     }
 
-    let del_check = gtk::CheckButton::with_label("Hapus berkas sumber setelah arsip dibuat");
+    let del_check = gtk::CheckButton::with_label(t("Hapus berkas sumber setelah arsip dibuat"));
     content.append(&del_check);
 
-    let dialog = adw::MessageDialog::new(Some(&ui.window), Some("Buat Archive"), None);
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some(t("Buat Archive")), None);
     dialog.set_extra_child(Some(&icon_with("zippy-add", &content)));
-    dialog.add_response("cancel", "Batal");
-    dialog.add_response("ok", "Buat");
+    dialog.add_response("cancel", t("Batal"));
+    dialog.add_response("ok", t("Buat"));
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("cancel");
@@ -1581,7 +1632,7 @@ fn run_compress(
     ui.revealer.set_reveal_child(true);
     ui.cancel_btn.set_sensitive(true);
     ui.bar.set_fraction(0.0);
-    ui.progress_label.set_text("Mengompres…");
+    ui.progress_label.set_text(t("Mengompres…"));
 
     let ui = ui.clone();
     glib::spawn_future_local(async move {
@@ -1611,10 +1662,10 @@ fn run_compress(
                 if delete_after {
                     trash_sources(&ui, &sources);
                 }
-                show_toast(&ui, "Archive dibuat");
+                show_toast(&ui, t("Archive dibuat"));
             }
-            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Kompres dibatalkan"),
-            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "Kompres Gagal", &e.to_string()),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, t("Kompres dibatalkan")),
+            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, t("Kompres Gagal"), &e.to_string()),
             Err(_) => {}
         }
     });
@@ -1634,7 +1685,7 @@ fn trash_sources(ui: &Rc<Ui>, sources: &[PathBuf]) {
     }
     if failed == 0 {
         log_event(ui, &format!("{} sumber dipindah ke Trash", sources.len()));
-        show_toast(ui, "Berkas sumber dipindahkan ke Trash");
+        show_toast(ui, t("Berkas sumber dipindahkan ke Trash"));
     } else {
         warn(ui, &format!("{failed} sumber gagal dipindah ke Trash"));
     }
@@ -1676,7 +1727,7 @@ fn schedule_dev_cancel(ui: &Rc<Ui>) {
 fn test_dialog(ui: &Rc<Ui>) {
     match ui.current.borrow().clone() {
         Some(archive) => run_test(ui, archive, None),
-        None => warn(ui, "Belum ada archive terbuka"),
+        None => warn(ui, t("Belum ada archive terbuka")),
     }
 }
 
@@ -1700,7 +1751,7 @@ fn run_test(ui: &Rc<Ui>, archive: PathBuf, password: Option<String>) {
     ui.revealer.set_reveal_child(true);
     ui.cancel_btn.set_sensitive(true);
     ui.bar.set_fraction(0.0);
-    ui.progress_label.set_text("Menguji…");
+    ui.progress_label.set_text(t("Menguji…"));
     schedule_dev_cancel(ui);
 
     let ui = ui.clone();
@@ -1728,30 +1779,33 @@ fn run_test(ui: &Rc<Ui>, archive: PathBuf, password: Option<String>) {
                 show_result_dialog(
                     &ui,
                     Notif::Good,
-                    "Test Selesai",
-                    "Tidak ada kesalahan ditemukan — arsip utuh.",
+                    t("Test Selesai"),
+                    t("Tidak ada kesalahan ditemukan — arsip utuh."),
                 );
                 tracing::info!("test ok");
             }
-            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Test dibatalkan"),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, t("Test dibatalkan")),
             Ok(Err(Error::Password)) => {
                 let archive = archive.clone();
                 ask_password(
                     &ui,
-                    "Archive Terenkripsi",
-                    "Masukkan password untuk menguji.",
-                    "Uji",
+                    t("Archive Terenkripsi"),
+                    t("Masukkan password untuk menguji."),
+                    t("Uji"),
                     move |ui, pw| match pw {
                         Some(pw) => run_test(ui, archive.clone(), Some(pw)),
-                        None => warn(ui, "Password kosong"),
+                        None => warn(ui, t("Password kosong")),
                     },
                 );
             }
             Ok(Err(e)) => show_result_dialog(
                 &ui,
                 Notif::Bad,
-                "Test Gagal",
-                &format!("Arsip rusak atau tidak valid:\n{e}"),
+                t("Test Gagal"),
+                &tf(
+                    "Arsip rusak atau tidak valid:\n{}",
+                    &[e.to_string().as_str()],
+                ),
             ),
             Err(_) => {}
         }
@@ -1765,7 +1819,7 @@ fn run_test(ui: &Rc<Ui>, archive: PathBuf, password: Option<String>) {
 fn repair_dialog(ui: &Rc<Ui>) {
     match ui.current.borrow().clone() {
         Some(archive) => run_repair(ui, archive),
-        None => warn(ui, "Belum ada archive terbuka"),
+        None => warn(ui, t("Belum ada archive terbuka")),
     }
 }
 
@@ -1779,34 +1833,34 @@ fn run_repair(ui: &Rc<Ui>, archive: PathBuf) {
         let _ = tx_done.send_blocking(zippy_core::repair(&worker, &cancel));
     });
 
-    let pulse = start_pulse(ui, "Memperbaiki arsip…");
+    let pulse = start_pulse(ui, t("Memperbaiki arsip…"));
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         let res = rx_done.recv().await;
         stop_pulse(&ui, &pulse);
         match res {
             Ok(Ok(rep)) => show_repair_result(&ui, &rep),
-            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Perbaikan dibatalkan"),
-            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "Repair Gagal", &e.to_string()),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, t("Perbaikan dibatalkan")),
+            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, t("Repair Gagal"), &e.to_string()),
             Err(_) => {}
         }
     });
 }
 
 fn show_repair_result(ui: &Rc<Ui>, rep: &zippy_core::RepairReport) {
-    let mut body = format!("Metode: {}\n", rep.method);
+    let mut body = tf("Metode: {}\n", &[rep.method.to_string().as_str()]);
     if let Some(p) = &rep.output_path {
-        body.push_str(&format!("Output: {}\n", p.display()));
+        body.push_str(&tf("Output: {}\n", &[p.display().to_string().as_str()]));
     }
     body.push_str(if rep.repaired {
-        "\nStatus: berhasil ✓"
+        t("\nStatus: berhasil ✓")
     } else {
-        "\nStatus: tidak dapat diperbaiki sepenuhnya"
+        t("\nStatus: tidak dapat diperbaiki sepenuhnya")
     });
     let (heading, kind) = if rep.repaired {
-        ("Perbaikan Berhasil", Notif::Good)
+        (t("Perbaikan Berhasil"), Notif::Good)
     } else {
-        ("Perbaikan Tidak Tuntas", Notif::Bad)
+        (t("Perbaikan Tidak Tuntas"), Notif::Bad)
     };
     show_result_dialog(ui, kind, heading, &body);
 }
@@ -1820,14 +1874,14 @@ fn scan_dialog(ui: &Rc<Ui>) {
         show_result_dialog(
             ui,
             Notif::Bad,
-            "ClamAV Tidak Terpasang",
-            "Pemindaian virus butuh ClamAV. Pasang paket `clamav` lalu coba lagi.",
+            t("ClamAV Tidak Terpasang"),
+            t("Pemindaian virus butuh ClamAV. Pasang paket `clamav` lalu coba lagi."),
         );
         return;
     }
     match ui.current.borrow().clone() {
         Some(archive) => run_scan(ui, archive),
-        None => warn(ui, "Belum ada archive terbuka"),
+        None => warn(ui, t("Belum ada archive terbuka")),
     }
 }
 
@@ -1841,15 +1895,15 @@ fn run_scan(ui: &Rc<Ui>, archive: PathBuf) {
         let _ = tx_done.send_blocking(zippy_core::scan(&worker, &cancel));
     });
 
-    let pulse = start_pulse(ui, "Memindai virus…");
+    let pulse = start_pulse(ui, t("Memindai virus…"));
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         let res = rx_done.recv().await;
         stop_pulse(&ui, &pulse);
         match res {
             Ok(Ok(rep)) => show_scan_result(&ui, &rep),
-            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Pemindaian dibatalkan"),
-            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "Scan Gagal", &e.to_string()),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, t("Pemindaian dibatalkan")),
+            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, t("Scan Gagal"), &e.to_string()),
             Err(_) => {}
         }
     });
@@ -1857,22 +1911,34 @@ fn run_scan(ui: &Rc<Ui>, archive: PathBuf) {
 
 fn show_scan_result(ui: &Rc<Ui>, rep: &zippy_core::ScanReport) {
     let clean = rep.is_clean();
-    let mut body = format!("Scanner: {}\n", rep.scanner);
+    let mut body = tf("Scanner: {}\n", &[rep.scanner.to_string().as_str()]);
     if clean {
-        body.push_str("\nArsip bersih ✓");
+        body.push_str(t("\nArsip bersih ✓"));
     } else {
-        body.push_str(&format!("\n{} berkas terinfeksi:\n", rep.findings.len()));
+        body.push_str(&tf(
+            "\n{} berkas terinfeksi:\n",
+            &[rep.findings.len().to_string().as_str()],
+        ));
         for f in rep.findings.iter().take(20) {
-            body.push_str(&format!("• {} — {}\n", f.path, f.signature));
+            body.push_str(&tf(
+                "• {} — {}\n",
+                &[
+                    f.path.to_string().as_str(),
+                    f.signature.to_string().as_str(),
+                ],
+            ));
         }
         if rep.findings.len() > 20 {
-            body.push_str(&format!("… dan {} lagi\n", rep.findings.len() - 20));
+            body.push_str(&tf(
+                "… dan {} lagi\n",
+                &[(rep.findings.len() - 20).to_string().as_str()],
+            ));
         }
     }
     let (heading, kind) = if clean {
-        ("Tidak Ada Virus", Notif::Good)
+        (t("Tidak Ada Virus"), Notif::Good)
     } else {
-        ("Virus Terdeteksi!", Notif::Bad)
+        (t("Virus Terdeteksi!"), Notif::Bad)
     };
     show_result_dialog(ui, kind, heading, &body);
 }
@@ -1885,7 +1951,7 @@ fn convert_dialog(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            warn(ui, "Belum ada archive terbuka");
+            warn(ui, t("Belum ada archive terbuka"));
             return;
         }
     };
@@ -1894,7 +1960,7 @@ fn convert_dialog(ui: &Rc<Ui>) {
         .and_then(|s| s.to_str())
         .unwrap_or("archive");
     let dialog = gtk::FileDialog::builder()
-        .title("Convert ke… (format dari ekstensi)")
+        .title(t("Convert ke… (format dari ekstensi)"))
         .initial_name(format!("{stem}.7z"))
         .build();
     let win = ui.window.clone();
@@ -1915,8 +1981,8 @@ fn ask_convert_options(ui: &Rc<Ui>, src: PathBuf, dest: PathBuf) {
         show_result_dialog(
             ui,
             Notif::Bad,
-            "Format Tidak Dikenali",
-            "Ekstensi tujuan tidak didukung.",
+            t("Format Tidak Dikenali"),
+            t("Ekstensi tujuan tidak didukung."),
         );
         return;
     }
@@ -1924,25 +1990,25 @@ fn ask_convert_options(ui: &Rc<Ui>, src: PathBuf, dest: PathBuf) {
     let supports_level = !matches!(kind, Some(ArchiveKind::Tar));
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    let level_dropdown = gtk::DropDown::from_strings(&LEVEL_LABELS);
+    let level_dropdown = gtk::DropDown::from_strings(&level_labels());
     level_dropdown.set_selected(index_from_level(ui.config.borrow().level));
     if supports_level {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        row.append(&gtk::Label::new(Some("Tingkat kompresi:")));
+        row.append(&gtk::Label::new(Some(t("Tingkat kompresi:"))));
         level_dropdown.set_hexpand(true);
         row.append(&level_dropdown);
         content.append(&row);
     }
     let pw_entry = gtk::PasswordEntry::builder().show_peek_icon(true).build();
     if supports_pw {
-        pw_entry.set_placeholder_text(Some("Password AES-256 hasil (opsional)"));
+        pw_entry.set_placeholder_text(Some(t("Password AES-256 hasil (opsional)")));
         content.append(&pw_entry);
     }
 
-    let dialog = adw::MessageDialog::new(Some(&ui.window), Some("Convert Archive"), None);
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some(t("Convert Archive")), None);
     dialog.set_extra_child(Some(&icon_with("zippy-add", &content)));
-    dialog.add_response("cancel", "Batal");
-    dialog.add_response("ok", "Convert");
+    dialog.add_response("cancel", t("Batal"));
+    dialog.add_response("ok", t("Convert"));
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("cancel");
@@ -1999,7 +2065,7 @@ fn run_convert(
         let _ = tx_done.send_blocking(res);
     });
 
-    let pulse = start_pulse(ui, "Mengonversi…");
+    let pulse = start_pulse(ui, t("Mengonversi…"));
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         let res = rx_done.recv().await;
@@ -2008,21 +2074,27 @@ fn run_convert(
             Ok(Ok(())) => {
                 log_event(
                     &ui,
-                    &format!("Convert: {} → {}", src.display(), dest.display()),
+                    &tf(
+                        "Convert: {} → {}",
+                        &[
+                            src.display().to_string().as_str(),
+                            dest.display().to_string().as_str(),
+                        ],
+                    ),
                 );
                 show_result_dialog(
                     &ui,
                     Notif::Good,
-                    "Konversi Selesai",
-                    &format!("Arsip dibuat:\n{}", dest.display()),
+                    t("Konversi Selesai"),
+                    &tf("Arsip dibuat:\n{}", &[dest.display().to_string().as_str()]),
                 );
             }
-            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Konversi dibatalkan"),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, t("Konversi dibatalkan")),
             Ok(Err(Error::Password)) => ask_password(
                 &ui,
-                "Sumber Terenkripsi",
-                "Masukkan password untuk membuka arsip sumber.",
-                "Convert",
+                t("Sumber Terenkripsi"),
+                t("Masukkan password untuk membuka arsip sumber."),
+                t("Convert"),
                 move |ui, pw| match pw {
                     Some(pw) => run_convert(
                         ui,
@@ -2032,10 +2104,10 @@ fn run_convert(
                         dest_pw.clone(),
                         level,
                     ),
-                    None => warn(ui, "Password kosong"),
+                    None => warn(ui, t("Password kosong")),
                 },
             ),
-            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "Konversi Gagal", &e.to_string()),
+            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, t("Konversi Gagal"), &e.to_string()),
             Err(_) => {}
         }
     });
@@ -2045,7 +2117,7 @@ fn sfx_dialog(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            warn(ui, "Belum ada archive terbuka");
+            warn(ui, t("Belum ada archive terbuka"));
             return;
         }
     };
@@ -2054,7 +2126,7 @@ fn sfx_dialog(ui: &Rc<Ui>) {
         .and_then(|s| s.to_str())
         .unwrap_or("archive");
     let dialog = gtk::FileDialog::builder()
-        .title("Buat SFX (.sh) ke…")
+        .title(t("Buat SFX (.sh) ke…"))
         .initial_name(format!("{stem}.sh"))
         .build();
     let win = ui.window.clone();
@@ -2080,7 +2152,7 @@ fn run_sfx(ui: &Rc<Ui>, src: PathBuf, dest: PathBuf, src_pw: Option<String>) {
         let _ = tx_done.send_blocking(res);
     });
 
-    let pulse = start_pulse(ui, "Membuat SFX…");
+    let pulse = start_pulse(ui, t("Membuat SFX…"));
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         let res = rx_done.recv().await;
@@ -2091,26 +2163,28 @@ fn run_sfx(ui: &Rc<Ui>, src: PathBuf, dest: PathBuf, src_pw: Option<String>) {
                 show_result_dialog(
                     &ui,
                     Notif::Good,
-                    "SFX Dibuat",
-                    &format!(
+                    t("SFX Dibuat"),
+                    &tf(
                         "Self-extracting script:\n{}\n\nJalankan: sh {} [folder-tujuan]",
-                        dest.display(),
-                        dest.display()
+                        &[
+                            dest.display().to_string().as_str(),
+                            dest.display().to_string().as_str(),
+                        ],
                     ),
                 );
             }
-            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Pembuatan SFX dibatalkan"),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, t("Pembuatan SFX dibatalkan")),
             Ok(Err(Error::Password)) => ask_password(
                 &ui,
-                "Sumber Terenkripsi",
-                "Masukkan password untuk membuka arsip sumber.",
-                "Buat SFX",
+                t("Sumber Terenkripsi"),
+                t("Masukkan password untuk membuka arsip sumber."),
+                t("Buat SFX"),
                 move |ui, pw| match pw {
                     Some(pw) => run_sfx(ui, src.clone(), dest.clone(), Some(pw)),
-                    None => warn(ui, "Password kosong"),
+                    None => warn(ui, t("Password kosong")),
                 },
             ),
-            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "SFX Gagal", &e.to_string()),
+            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, t("SFX Gagal"), &e.to_string()),
             Err(_) => {}
         }
     });
@@ -2124,7 +2198,7 @@ fn comment_dialog(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            warn(ui, "Belum ada archive terbuka");
+            warn(ui, t("Belum ada archive terbuka"));
             return;
         }
     };
@@ -2135,8 +2209,8 @@ fn comment_dialog(ui: &Rc<Ui>) {
         show_result_dialog(
             ui,
             Notif::Bad,
-            "Tidak Didukung",
-            "Komentar arsip hanya tersedia untuk ZIP.",
+            t("Tidak Didukung"),
+            t("Komentar arsip hanya tersedia untuk ZIP."),
         );
         return;
     }
@@ -2153,12 +2227,12 @@ fn comment_dialog(ui: &Rc<Ui>) {
 
     let dialog = adw::MessageDialog::new(
         Some(&ui.window),
-        Some("Komentar Archive"),
-        Some("Komentar disimpan di arsip ZIP."),
+        Some(t("Komentar Archive")),
+        Some(t("Komentar disimpan di arsip ZIP.")),
     );
     dialog.set_extra_child(Some(&icon_with("zippy-info", &scroll)));
-    dialog.add_response("cancel", "Batal");
-    dialog.add_response("ok", "Simpan");
+    dialog.add_response("cancel", t("Batal"));
+    dialog.add_response("ok", t("Simpan"));
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("cancel");
@@ -2186,15 +2260,15 @@ fn run_set_comment(ui: &Rc<Ui>, archive: PathBuf, comment: String) {
         let res = zippy_core::archive::set_comment(&wa, &comment, &cancel, &zippy_core::NullSink);
         let _ = tx_done.send_blocking(res);
     });
-    let pulse = start_pulse(ui, "Menyimpan komentar…");
+    let pulse = start_pulse(ui, t("Menyimpan komentar…"));
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         let res = rx_done.recv().await;
         stop_pulse(&ui, &pulse);
         match res {
-            Ok(Ok(())) => show_toast(&ui, "Komentar disimpan"),
+            Ok(Ok(())) => show_toast(&ui, t("Komentar disimpan")),
             Ok(Err(e)) => {
-                show_result_dialog(&ui, Notif::Bad, "Gagal Simpan Komentar", &e.to_string())
+                show_result_dialog(&ui, Notif::Bad, t("Gagal Simpan Komentar"), &e.to_string())
             }
             Err(_) => {}
         }
@@ -2249,15 +2323,15 @@ fn icon_with(icon: &str, content: &impl IsA<gtk::Widget>) -> gtk::Box {
 /// Dialog peringatan ringkas ber-ikon (Bad) — pengganti toast untuk pesan
 /// "tindakan terblokir" / error agar konsisten punya ikon.
 fn warn(ui: &Rc<Ui>, msg: &str) {
-    show_result_dialog(ui, Notif::Bad, "Perhatian", msg);
+    show_result_dialog(ui, Notif::Bad, t("Perhatian"), msg);
 }
 
-/// Dialog hasil/peringatan ber-ikon dengan satu tombol "Tutup" — pengganti
+/// Dialog hasil/peringatan ber-ikon dengan satu tombol t("Tutup") — pengganti
 /// toast untuk pesan penting (gaya konsisten dgn dialog Repair/Scan).
 fn show_result_dialog(ui: &Rc<Ui>, kind: Notif, heading: &str, body: &str) {
     let dialog = adw::MessageDialog::new(Some(&ui.window), Some(heading), Some(body));
     set_notif_icon(&dialog, kind);
-    dialog.add_response("ok", "Tutup");
+    dialog.add_response("ok", t("Tutup"));
     dialog.set_default_response(Some("ok"));
     log_event(ui, &format!("{heading} — {body}"));
     dialog.present();
@@ -2299,13 +2373,13 @@ fn stop_pulse(ui: &Rc<Ui>, flag: &Rc<std::cell::Cell<bool>>) {
 fn view_selected(ui: &Rc<Ui>) {
     match selected_entry(ui) {
         Some(obj) => view_entry(ui, &obj),
-        None => warn(ui, "Pilih berkas dulu"),
+        None => warn(ui, t("Pilih berkas dulu")),
     }
 }
 
 fn view_entry(ui: &Rc<Ui>, obj: &file_list::EntryObject) {
     if obj.is_parent() || obj.is_dir() {
-        warn(ui, "Pilih berkas, bukan folder");
+        warn(ui, t("Pilih berkas, bukan folder"));
         return;
     }
     if let Some(archive) = ui.current.borrow().clone() {
@@ -2333,7 +2407,8 @@ fn run_view(ui: &Rc<Ui>, archive: PathBuf, name: String, password: Option<String
         let _ = tx.send_blocking(res);
     });
 
-    ui.progress_label.set_text(&format!("Membuka {name}…"));
+    ui.progress_label
+        .set_text(&tf("Membuka {}…", &[name.as_str()]));
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         match rx.recv().await {
@@ -2343,16 +2418,16 @@ fn run_view(ui: &Rc<Ui>, archive: PathBuf, name: String, password: Option<String
                 let name = name.clone();
                 ask_password(
                     &ui,
-                    "Archive Terenkripsi",
-                    "Masukkan password untuk membuka berkas.",
-                    "Buka",
+                    t("Archive Terenkripsi"),
+                    t("Masukkan password untuk membuka berkas."),
+                    t("Buka"),
                     move |ui, pw| match pw {
                         Some(pw) => run_view(ui, archive.clone(), name.clone(), Some(pw)),
-                        None => warn(ui, "Password kosong"),
+                        None => warn(ui, t("Password kosong")),
                     },
                 );
             }
-            Ok(Err(e)) => warn(&ui, &format!("Gagal membuka: {e}")),
+            Ok(Err(e)) => warn(&ui, &tf("Gagal membuka: {}", &[e.to_string().as_str()])),
             Err(_) => {}
         }
     });
@@ -2455,42 +2530,48 @@ fn build_context_menu(ui: &Rc<Ui>) -> gio::Menu {
     match sel.as_slice() {
         // Satu baris terpilih.
         [o] if o.is_parent() => {
-            menu.append(Some("Naik ke folder induk"), Some("win.up"));
+            menu.append(Some(t("Naik ke folder induk")), Some("win.up"));
         }
         [o] if o.is_dir() => {
             let s = gio::Menu::new();
-            s.append(Some("Buka folder"), Some("win.open_folder"));
-            s.append(Some("Extract folder ini…"), Some("win.extract_sel"));
+            s.append(Some(t("Buka folder")), Some("win.open_folder"));
+            s.append(Some(t("Extract folder ini…")), Some("win.extract_sel"));
             menu.append_section(None, &s);
             let s2 = gio::Menu::new();
-            s2.append(Some("Ganti nama…"), Some("win.rename"));
-            s2.append(Some("Salin nama"), Some("win.copy_name"));
-            s2.append(Some("Hapus folder ini"), Some("win.delete"));
-            s2.append(Some("Properti…"), Some("win.props"));
+            s2.append(Some(t("Ganti nama…")), Some("win.rename"));
+            s2.append(Some(t("Salin nama")), Some("win.copy_name"));
+            s2.append(Some(t("Hapus folder ini")), Some("win.delete"));
+            s2.append(Some(t("Properti…")), Some("win.props"));
             menu.append_section(None, &s2);
         }
         [_o] => {
             let s = gio::Menu::new();
-            s.append(Some("Buka (View)"), Some("win.view"));
-            s.append(Some("Extract berkas ini…"), Some("win.extract_sel"));
+            s.append(Some(t("Buka (View)")), Some("win.view"));
+            s.append(Some(t("Extract berkas ini…")), Some("win.extract_sel"));
             menu.append_section(None, &s);
             let s2 = gio::Menu::new();
-            s2.append(Some("Ganti nama…"), Some("win.rename"));
-            s2.append(Some("Salin nama"), Some("win.copy_name"));
-            s2.append(Some("Hapus"), Some("win.delete"));
-            s2.append(Some("Properti…"), Some("win.props"));
+            s2.append(Some(t("Ganti nama…")), Some("win.rename"));
+            s2.append(Some(t("Salin nama")), Some("win.copy_name"));
+            s2.append(Some(t("Hapus")), Some("win.delete"));
+            s2.append(Some(t("Properti…")), Some("win.props"));
             menu.append_section(None, &s2);
         }
         // Banyak baris terpilih.
         many if many.len() > 1 => {
             let s = gio::Menu::new();
             s.append(
-                Some(&format!("Extract {} item terpilih…", many.len())),
+                Some(&tf(
+                    "Extract {} item terpilih…",
+                    &[many.len().to_string().as_str()],
+                )),
                 Some("win.extract_sel"),
             );
-            s.append(Some("Salin nama"), Some("win.copy_name"));
+            s.append(Some(t("Salin nama")), Some("win.copy_name"));
             s.append(
-                Some(&format!("Hapus {} item terpilih", many.len())),
+                Some(&tf(
+                    "Hapus {} item terpilih",
+                    &[many.len().to_string().as_str()],
+                )),
                 Some("win.delete"),
             );
             menu.append_section(None, &s);
@@ -2501,11 +2582,11 @@ fn build_context_menu(ui: &Rc<Ui>) -> gio::Menu {
     // Aksi tingkat-archive (selalu ada bila archive terbuka).
     if ui.current.borrow().is_some() {
         let s = gio::Menu::new();
-        s.append(Some("Extract Semua…"), Some("win.extract"));
-        s.append(Some("Test Archive"), Some("win.test"));
+        s.append(Some(t("Extract Semua…")), Some("win.extract"));
+        s.append(Some(t("Test Archive")), Some("win.test"));
         menu.append_section(None, &s);
         let s2 = gio::Menu::new();
-        s2.append(Some("Tutup Archive"), Some("win.close"));
+        s2.append(Some(t("Tutup Archive")), Some("win.close"));
         menu.append_section(None, &s2);
     }
     menu
@@ -2547,7 +2628,10 @@ fn copy_selected_names(ui: &Rc<Ui>) {
         return;
     }
     ui.window.clipboard().set_text(&names.join("\n"));
-    show_toast(ui, &format!("{} nama disalin", names.len()));
+    show_toast(
+        ui,
+        &tf("{} nama disalin", &[names.len().to_string().as_str()]),
+    );
 }
 
 /// Dialog properti untuk satu entry terpilih.
@@ -2564,20 +2648,22 @@ fn show_properties(ui: &Rc<Ui>) {
     } else {
         "—".to_string()
     };
-    let body = format!(
+    let body = tf(
         "Nama: {}\nPath: {}\nTipe: {}\nUkuran: {} bita\nPacked: {} bita\nRasio: {}\nModified: {}\nCRC32: {}",
-        o.name(),
-        o.full_path(),
-        if o.is_dir() { "Folder" } else { "Berkas" },
-        file_list::group_thousands(o.size()),
-        file_list::group_thousands(o.packed()),
-        ratio,
-        opt_dash(o.modified()),
-        opt_dash(o.crc_hex()),
+        &[
+            o.name().to_string().as_str(),
+            o.full_path().to_string().as_str(),
+            if o.is_dir() { t("Folder") } else { t("Berkas") },
+            file_list::group_thousands(o.size()).as_str(),
+            file_list::group_thousands(o.packed()).as_str(),
+            ratio.as_str(),
+            opt_dash(o.modified()).as_str(),
+            opt_dash(o.crc_hex()).as_str(),
+        ],
     );
-    let dialog = adw::MessageDialog::new(Some(&ui.window), Some("Properti"), Some(&body));
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some(t("Properti")), Some(&body));
     set_dialog_icon(&dialog, "zippy-info");
-    dialog.add_response("ok", "Tutup");
+    dialog.add_response("ok", t("Tutup"));
     dialog.present();
 }
 
@@ -2623,12 +2709,12 @@ fn extract_selected(ui: &Rc<Ui>) {
     names.sort();
     names.dedup();
     if names.is_empty() {
-        warn(ui, "Tidak ada berkas untuk di-extract");
+        warn(ui, t("Tidak ada berkas untuk di-extract"));
         return;
     }
 
     let dialog = gtk::FileDialog::builder()
-        .title("Extract ke folder…")
+        .title(t("Extract ke folder…"))
         .build();
     let win = ui.window.clone();
     let ui = ui.clone();
@@ -2689,7 +2775,7 @@ fn run_extract_selected(
     ui.revealer.set_reveal_child(true);
     ui.cancel_btn.set_sensitive(true);
     ui.bar.set_fraction(0.0);
-    ui.progress_label.set_text("Memulai…");
+    ui.progress_label.set_text(t("Memulai…"));
     schedule_dev_cancel(ui);
 
     let ui = ui.clone();
@@ -2710,17 +2796,17 @@ fn run_extract_selected(
         ui.revealer.set_reveal_child(false);
         *ui.cancel.borrow_mut() = None;
         match rx_done.recv().await {
-            Ok(Ok(())) => show_toast(&ui, "Extract selesai"),
-            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Extract dibatalkan"),
+            Ok(Ok(())) => show_toast(&ui, t("Extract selesai")),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, t("Extract dibatalkan")),
             Ok(Err(Error::Password)) => {
                 let archive = archive.clone();
                 let names = names.clone();
                 let dest = dest.clone();
                 ask_password(
                     &ui,
-                    "Archive Terenkripsi",
-                    "Masukkan password untuk extract.",
-                    "Extract",
+                    t("Archive Terenkripsi"),
+                    t("Masukkan password untuk extract."),
+                    t("Extract"),
                     move |ui, pw| match pw {
                         Some(pw) => run_extract_selected(
                             ui,
@@ -2729,11 +2815,11 @@ fn run_extract_selected(
                             dest.clone(),
                             Some(pw),
                         ),
-                        None => warn(ui, "Password kosong"),
+                        None => warn(ui, t("Password kosong")),
                     },
                 );
             }
-            Ok(Err(e)) => warn(&ui, &format!("Gagal extract: {e}")),
+            Ok(Err(e)) => warn(&ui, &tf("Gagal extract: {}", &[e.to_string().as_str()])),
             Err(_) => {}
         }
     });
@@ -2752,11 +2838,11 @@ fn delete_selected(ui: &Rc<Ui>) {
     // Format yang tidak mendukung hapus: tolak lebih awal dengan pesan jelas.
     match zippy_core::archive::kind_from_ext(&archive) {
         Some(ArchiveKind::Rar) => {
-            warn(ui, "RAR tidak mendukung hapus (extract-only)");
+            warn(ui, t("RAR tidak mendukung hapus (extract-only)"));
             return;
         }
         Some(ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst) => {
-            warn(ui, "Format stream tunggal tak punya entri untuk dihapus");
+            warn(ui, t("Format stream tunggal tak punya entri untuk dihapus"));
             return;
         }
         _ => {}
@@ -2770,7 +2856,7 @@ fn delete_selected(ui: &Rc<Ui>) {
         .map(|o| o.full_path())
         .collect();
     if names.is_empty() {
-        show_toast(ui, "Pilih entri yang akan dihapus");
+        show_toast(ui, t("Pilih entri yang akan dihapus"));
         return;
     }
 
@@ -2781,20 +2867,21 @@ fn delete_selected(ui: &Rc<Ui>) {
     }
 
     let body = if names.len() == 1 {
-        format!(
+        tf(
             "Hapus \"{}\" dari archive? Tindakan ini tidak bisa dibatalkan.",
-            names[0]
+            &[names[0].to_string().as_str()],
         )
     } else {
-        format!(
+        tf(
             "Hapus {} item dari archive? Tindakan ini tidak bisa dibatalkan.",
-            names.len()
+            &[names.len().to_string().as_str()],
         )
     };
-    let dialog = adw::MessageDialog::new(Some(&ui.window), Some("Hapus dari Archive"), Some(&body));
+    let dialog =
+        adw::MessageDialog::new(Some(&ui.window), Some(t("Hapus dari Archive")), Some(&body));
     set_dialog_icon(&dialog, "zippy-delete");
-    dialog.add_response("cancel", "Batal");
-    dialog.add_response("delete", "Hapus");
+    dialog.add_response("cancel", t("Batal"));
+    dialog.add_response("delete", t("Hapus"));
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
@@ -2835,7 +2922,7 @@ fn run_delete(ui: &Rc<Ui>, archive: PathBuf, names: Vec<String>, password: Optio
     ui.revealer.set_reveal_child(true);
     ui.cancel_btn.set_sensitive(true);
     ui.bar.set_fraction(0.0);
-    ui.progress_label.set_text("Menghapus…");
+    ui.progress_label.set_text(t("Menghapus…"));
 
     let ui = ui.clone();
     glib::spawn_future_local(async move {
@@ -2858,26 +2945,26 @@ fn run_delete(ui: &Rc<Ui>, archive: PathBuf, names: Vec<String>, password: Optio
         *ui.cancel.borrow_mut() = None;
         match rx_done.recv().await {
             Ok(Ok(())) => {
-                show_toast(&ui, "Entri dihapus");
+                show_toast(&ui, t("Entri dihapus"));
                 // Muat ulang agar daftar mencerminkan archive baru.
                 load_archive(&ui, archive.clone());
             }
-            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Hapus dibatalkan"),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, t("Hapus dibatalkan")),
             Ok(Err(Error::Password)) => {
                 let archive = archive.clone();
                 let names = names.clone();
                 ask_password(
                     &ui,
-                    "Archive Terenkripsi",
-                    "Masukkan password untuk menghapus entri.",
-                    "Hapus",
+                    t("Archive Terenkripsi"),
+                    t("Masukkan password untuk menghapus entri."),
+                    t("Hapus"),
                     move |ui, pw| match pw {
                         Some(pw) => run_delete(ui, archive.clone(), names.clone(), Some(pw)),
-                        None => warn(ui, "Password kosong"),
+                        None => warn(ui, t("Password kosong")),
                     },
                 );
             }
-            Ok(Err(e)) => warn(&ui, &format!("Gagal hapus: {e}")),
+            Ok(Err(e)) => warn(&ui, &tf("Gagal hapus: {}", &[e.to_string().as_str()])),
             Err(_) => {}
         }
     });
@@ -2891,17 +2978,20 @@ fn rename_selected(ui: &Rc<Ui>) {
     let archive = match ui.current.borrow().clone() {
         Some(p) => p,
         None => {
-            warn(ui, "Belum ada archive terbuka");
+            warn(ui, t("Belum ada archive terbuka"));
             return;
         }
     };
     match zippy_core::archive::kind_from_ext(&archive) {
         Some(ArchiveKind::Rar) => {
-            warn(ui, "RAR tidak mendukung rename (extract-only)");
+            warn(ui, t("RAR tidak mendukung rename (extract-only)"));
             return;
         }
         Some(ArchiveKind::Gz | ArchiveKind::Bz2 | ArchiveKind::Xz | ArchiveKind::Zst) => {
-            warn(ui, "Format stream tunggal tak punya entri untuk di-rename");
+            warn(
+                ui,
+                t("Format stream tunggal tak punya entri untuk di-rename"),
+            );
             return;
         }
         _ => {}
@@ -2909,7 +2999,7 @@ fn rename_selected(ui: &Rc<Ui>) {
     let obj = match selected_entry(ui) {
         Some(o) => o,
         None => {
-            warn(ui, "Pilih entri yang akan di-rename");
+            warn(ui, t("Pilih entri yang akan di-rename"));
             return;
         }
     };
@@ -2923,12 +3013,12 @@ fn rename_selected(ui: &Rc<Ui>) {
     entry.set_activates_default(true);
     let dialog = adw::MessageDialog::new(
         Some(&ui.window),
-        Some("Ganti Nama"),
-        Some("Masukkan nama baru (tetap di folder yang sama)."),
+        Some(t("Ganti Nama")),
+        Some(t("Masukkan nama baru (tetap di folder yang sama).")),
     );
     dialog.set_extra_child(Some(&icon_with("zippy-info", &entry)));
-    dialog.add_response("cancel", "Batal");
-    dialog.add_response("ok", "Ganti Nama");
+    dialog.add_response("cancel", t("Batal"));
+    dialog.add_response("ok", t("Ganti Nama"));
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("cancel");
@@ -2940,7 +3030,7 @@ fn rename_selected(ui: &Rc<Ui>) {
         }
         let new = entry.text().to_string();
         if new.trim().is_empty() {
-            warn(&ui, "Nama baru kosong");
+            warn(&ui, t("Nama baru kosong"));
             return;
         }
         run_rename(&ui, archive.clone(), old_full.clone(), new, None);
@@ -2967,7 +3057,7 @@ fn run_rename(ui: &Rc<Ui>, archive: PathBuf, old: String, new: String, password:
         let _ = tx_done.send_blocking(res);
     });
 
-    let pulse = start_pulse(ui, "Mengganti nama…");
+    let pulse = start_pulse(ui, t("Mengganti nama…"));
     let ui = ui.clone();
     glib::spawn_future_local(async move {
         let res = rx_done.recv().await;
@@ -2975,21 +3065,21 @@ fn run_rename(ui: &Rc<Ui>, archive: PathBuf, old: String, new: String, password:
         match res {
             Ok(Ok(())) => {
                 log_event(&ui, &format!("Rename: {old} → {new}"));
-                show_toast(&ui, "Nama diubah");
+                show_toast(&ui, t("Nama diubah"));
                 load_archive(&ui, archive.clone());
             }
-            Ok(Err(Error::Cancelled)) => show_toast(&ui, "Rename dibatalkan"),
+            Ok(Err(Error::Cancelled)) => show_toast(&ui, t("Rename dibatalkan")),
             Ok(Err(Error::Password)) => ask_password(
                 &ui,
-                "Archive Terenkripsi",
-                "Masukkan password untuk mengganti nama entri.",
-                "Ganti Nama",
+                t("Archive Terenkripsi"),
+                t("Masukkan password untuk mengganti nama entri."),
+                t("Ganti Nama"),
                 move |ui, pw| match pw {
                     Some(pw) => run_rename(ui, archive.clone(), old.clone(), new.clone(), Some(pw)),
-                    None => warn(ui, "Password kosong"),
+                    None => warn(ui, t("Password kosong")),
                 },
             ),
-            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, "Rename Gagal", &e.to_string()),
+            Ok(Err(e)) => show_result_dialog(&ui, Notif::Bad, t("Rename Gagal"), &e.to_string()),
             Err(_) => {}
         }
     });
@@ -3018,8 +3108,11 @@ fn show_about(ui: &Rc<Ui>) {
         .license_type(gtk::License::MitX11)
         .copyright("© 2026 s4rt4")
         .build();
-    about.add_link("Repositori GitHub", "https://github.com/s4rt4/zippy");
-    about.add_link("Laporkan Masalah", "https://github.com/s4rt4/zippy/issues");
+    about.add_link(t("Repositori GitHub"), "https://github.com/s4rt4/zippy");
+    about.add_link(
+        t("Laporkan Masalah"),
+        "https://github.com/s4rt4/zippy/issues",
+    );
     about.present();
 }
 
@@ -3074,17 +3167,56 @@ fn show_preferences(ui: &Rc<Ui>) {
     let win = adw::PreferencesWindow::builder()
         .transient_for(&ui.window)
         .modal(true)
-        .title("Preferensi")
+        .title(t("Preferensi"))
         .search_enabled(false)
         .build();
     win.set_default_size(480, 360);
 
     let page = adw::PreferencesPage::new();
-    let group = adw::PreferencesGroup::builder().title("Umum").build();
+    let group = adw::PreferencesGroup::builder().title(t("Umum")).build();
+
+    // Bahasa antarmuka — perubahan diterapkan langsung (window dibangun ulang).
+    let lang_row = adw::ComboRow::builder().title(t("Bahasa")).build();
+    let lang_model = gtk::StringList::new(&[
+        t("Ikuti sistem (locale)"),
+        t("Bahasa Indonesia"),
+        t("English"),
+    ]);
+    lang_row.set_model(Some(&lang_model));
+    lang_row.set_selected(match ui.config.borrow().language {
+        LangPref::Auto => 0,
+        LangPref::Id => 1,
+        LangPref::En => 2,
+    });
+    lang_row.connect_selected_notify({
+        let ui = ui.clone();
+        move |r| {
+            let pref = match r.selected() {
+                1 => LangPref::Id,
+                2 => LangPref::En,
+                _ => LangPref::Auto,
+            };
+            {
+                let mut c = ui.config.borrow_mut();
+                if c.language == pref {
+                    return;
+                }
+                c.language = pref;
+                c.save();
+            }
+            i18n::set_lang(pref.resolve());
+            // Tutup jendela Preferensi lalu bangun ulang window utama.
+            if let Some(win) = r.root().and_downcast::<gtk::Window>() {
+                win.close();
+            }
+            rebuild_window(&ui);
+        }
+    });
+    group.add(&lang_row);
 
     // Tema.
-    let scheme_row = adw::ComboRow::builder().title("Tema").build();
-    let scheme_model = gtk::StringList::new(&["Ikuti sistem", "Terang", "Gelap"]);
+    let scheme_row = adw::ComboRow::builder().title(t("Tema")).build();
+    let scheme_model = gtk::StringList::new(&[t("Ikuti sistem"), t("Terang"), t("Gelap")]);
     scheme_row.set_model(Some(&scheme_model));
     scheme_row.set_selected(match ui.config.borrow().scheme {
         config::Scheme::Default => 0,
@@ -3109,10 +3241,10 @@ fn show_preferences(ui: &Rc<Ui>) {
 
     // Tingkat kompresi default.
     let level_row = adw::ComboRow::builder()
-        .title("Tingkat kompresi default")
-        .subtitle("Dipakai sebagai pilihan awal di dialog Add")
+        .title(t("Tingkat kompresi default"))
+        .subtitle(t("Dipakai sebagai pilihan awal di dialog Add"))
         .build();
-    let level_model = gtk::StringList::new(&LEVEL_LABELS);
+    let level_model = gtk::StringList::new(&level_labels());
     level_row.set_model(Some(&level_model));
     level_row.set_selected(index_from_level(ui.config.borrow().level));
     level_row.connect_selected_notify({
@@ -3127,8 +3259,8 @@ fn show_preferences(ui: &Rc<Ui>) {
 
     // Konfirmasi hapus.
     let del_row = adw::SwitchRow::builder()
-        .title("Konfirmasi sebelum hapus")
-        .subtitle("Tampilkan dialog konfirmasi saat menghapus entri arsip")
+        .title(t("Konfirmasi sebelum hapus"))
+        .subtitle(t("Tampilkan dialog konfirmasi saat menghapus entri arsip"))
         .build();
     del_row.set_active(ui.config.borrow().confirm_delete);
     del_row.connect_active_notify({
@@ -3143,8 +3275,8 @@ fn show_preferences(ui: &Rc<Ui>) {
 
     // Hapus arsip ke Trash setelah extract sukses.
     let trash_row = adw::SwitchRow::builder()
-        .title("Hapus arsip setelah extract")
-        .subtitle("Pindahkan arsip ke Trash setelah extract berhasil")
+        .title(t("Hapus arsip setelah extract"))
+        .subtitle(t("Pindahkan arsip ke Trash setelah extract berhasil"))
         .build();
     trash_row.set_active(ui.config.borrow().delete_after_extract);
     trash_row.connect_active_notify({
@@ -3159,12 +3291,12 @@ fn show_preferences(ui: &Rc<Ui>) {
 
     // Tipe berkas terlarang (exclude from extracting).
     let proh_row = adw::EntryRow::builder()
-        .title("Tipe berkas dilarang di-extract")
+        .title(t("Tipe berkas dilarang di-extract"))
         .build();
     proh_row.set_text(&ui.config.borrow().prohibited.join(" "));
-    proh_row.set_tooltip_text(Some(
+    proh_row.set_tooltip_text(Some(t(
         "Ekstensi dipisah spasi (mis. \"desktop sh exe\"). Kosong = tanpa filter.",
-    ));
+    )));
     proh_row.connect_apply({
         let ui = ui.clone();
         move |r| {
@@ -3177,8 +3309,8 @@ fn show_preferences(ui: &Rc<Ui>) {
 
     // Penyandian nama berkas (ZIP legasi).
     let enc_row = adw::ComboRow::builder()
-        .title("Penyandian nama (ZIP legasi)")
-        .subtitle("Untuk arsip lama dengan nama non-UTF8")
+        .title(t("Penyandian nama (ZIP legasi)"))
+        .subtitle(t("Untuk arsip lama dengan nama non-UTF8"))
         .build();
     let enc_labels: Vec<&str> = config::ENCODINGS.iter().map(|(l, _)| *l).collect();
     enc_row.set_model(Some(&gtk::StringList::new(&enc_labels)));
@@ -3211,8 +3343,8 @@ fn show_preferences(ui: &Rc<Ui>) {
 
     // Profil kompresi (buka manager).
     let prof_row = adw::ActionRow::builder()
-        .title("Profil kompresi")
-        .subtitle("Simpan preset level untuk dialog Add")
+        .title(t("Profil kompresi"))
+        .subtitle(t("Simpan preset level untuk dialog Add"))
         .activatable(true)
         .build();
     prof_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
@@ -3232,7 +3364,7 @@ fn show_profiles_manager(ui: &Rc<Ui>) {
     let win = adw::PreferencesWindow::builder()
         .transient_for(&ui.window)
         .modal(true)
-        .title("Profil Kompresi")
+        .title(t("Profil Kompresi"))
         .search_enabled(false)
         .build();
     win.set_default_size(420, 360);
@@ -3240,14 +3372,14 @@ fn show_profiles_manager(ui: &Rc<Ui>) {
 
     // Grup: tambah profil baru.
     let add_group = adw::PreferencesGroup::builder()
-        .title("Tambah Profil")
+        .title(t("Tambah Profil"))
         .build();
-    let name_row = adw::EntryRow::builder().title("Nama profil").build();
-    let level_row = adw::ComboRow::builder().title("Tingkat").build();
-    level_row.set_model(Some(&gtk::StringList::new(&LEVEL_LABELS)));
+    let name_row = adw::EntryRow::builder().title(t("Nama profil")).build();
+    let level_row = adw::ComboRow::builder().title(t("Tingkat")).build();
+    level_row.set_model(Some(&gtk::StringList::new(&level_labels())));
     level_row.set_selected(2);
     let add_btn = gtk::Button::builder()
-        .label("Tambah")
+        .label(t("Tambah"))
         .halign(gtk::Align::End)
         .build();
     add_btn.add_css_class("suggested-action");
@@ -3257,7 +3389,9 @@ fn show_profiles_manager(ui: &Rc<Ui>) {
     page.add(&add_group);
 
     // Grup: daftar profil tersimpan.
-    let list_group = adw::PreferencesGroup::builder().title("Tersimpan").build();
+    let list_group = adw::PreferencesGroup::builder()
+        .title(t("Tersimpan"))
+        .build();
     page.add(&list_group);
 
     let refresh = {
@@ -3271,7 +3405,7 @@ fn show_profiles_manager(ui: &Rc<Ui>) {
             for (name, level) in ui.config.borrow().profiles.clone() {
                 let row = adw::ActionRow::builder()
                     .title(&name)
-                    .subtitle(LEVEL_LABELS[index_from_level(level) as usize])
+                    .subtitle(level_labels()[index_from_level(level) as usize])
                     .build();
                 let del = gtk::Button::builder()
                     .icon_name("user-trash-symbolic")
@@ -3306,7 +3440,7 @@ fn show_profiles_manager(ui: &Rc<Ui>) {
         move |_| {
             let name = name_row.text().trim().to_string();
             if name.is_empty() || name.contains('=') || name.contains('.') {
-                warn(&ui, "Nama profil tidak valid (tanpa '.' atau '=')");
+                warn(&ui, t("Nama profil tidak valid (tanpa '.' atau '=')"));
                 return;
             }
             let level = level_from_index(level_row.selected());
@@ -3338,12 +3472,12 @@ fn choose_encoding_dialog(ui: &Rc<Ui>) {
     );
     let dialog = adw::MessageDialog::new(
         Some(&ui.window),
-        Some("Penyandian Nama"),
-        Some("Untuk arsip ZIP lama dengan nama non-UTF8."),
+        Some(t("Penyandian Nama")),
+        Some(t("Untuk arsip ZIP lama dengan nama non-UTF8.")),
     );
     dialog.set_extra_child(Some(&icon_with("zippy-info", &dd)));
-    dialog.add_response("cancel", "Batal");
-    dialog.add_response("ok", "Terapkan");
+    dialog.add_response("cancel", t("Batal"));
+    dialog.add_response("ok", t("Terapkan"));
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("ok"));
     let ui = ui.clone();
@@ -3377,13 +3511,13 @@ fn show_wizard(ui: &Rc<Ui>) {
     let win = adw::Window::builder()
         .transient_for(&ui.window)
         .modal(true)
-        .title("Wizard Zippy")
+        .title(t("Wizard Zippy"))
         .default_width(440)
         .build();
 
     let page = adw::PreferencesPage::new();
     let group = adw::PreferencesGroup::builder()
-        .title("Apa yang ingin Anda lakukan?")
+        .title(t("Apa yang ingin Anda lakukan?"))
         .build();
 
     let make_row = |title: &str, subtitle: &str, icon: &str| {
@@ -3398,8 +3532,8 @@ fn show_wizard(ui: &Rc<Ui>) {
     };
 
     let open = make_row(
-        "Buka arsip",
-        "Tampilkan isi arsip yang sudah ada",
+        t("Buka arsip"),
+        t("Tampilkan isi arsip yang sudah ada"),
         "document-open",
     );
     open.connect_activated({
@@ -3411,8 +3545,8 @@ fn show_wizard(ui: &Rc<Ui>) {
         }
     });
     let create = make_row(
-        "Buat arsip baru",
-        "Pilih berkas/folder lalu kompres",
+        t("Buat arsip baru"),
+        t("Pilih berkas/folder lalu kompres"),
         "list-add",
     );
     create.connect_activated({
@@ -3424,8 +3558,8 @@ fn show_wizard(ui: &Rc<Ui>) {
         }
     });
     let extract = make_row(
-        "Extract arsip",
-        "Pilih arsip lalu folder tujuan",
+        t("Extract arsip"),
+        t("Pilih arsip lalu folder tujuan"),
         "archive-extract",
     );
     extract.connect_activated({
@@ -3437,8 +3571,8 @@ fn show_wizard(ui: &Rc<Ui>) {
         }
     });
     let test = make_row(
-        "Uji arsip",
-        "Verifikasi integritas isi arsip",
+        t("Uji arsip"),
+        t("Verifikasi integritas isi arsip"),
         "dialog-ok-apply",
     );
     test.connect_activated({
@@ -3467,7 +3601,7 @@ fn show_wizard(ui: &Rc<Ui>) {
 /// Wizard: pilih arsip → pilih folder tujuan → extract.
 fn wizard_extract(ui: &Rc<Ui>) {
     let dialog = gtk::FileDialog::builder()
-        .title("Pilih arsip untuk di-extract")
+        .title(t("Pilih arsip untuk di-extract"))
         .build();
     let win = ui.window.clone();
     let ui = ui.clone();
@@ -3475,7 +3609,7 @@ fn wizard_extract(ui: &Rc<Ui>) {
         let Ok(file) = res else { return };
         let Some(archive) = file.path() else { return };
         let folder = gtk::FileDialog::builder()
-            .title("Extract ke folder…")
+            .title(t("Extract ke folder…"))
             .build();
         let ui = ui.clone();
         folder.select_folder(
@@ -3495,7 +3629,7 @@ fn wizard_extract(ui: &Rc<Ui>) {
 /// Wizard: pilih arsip → uji integritas.
 fn wizard_test(ui: &Rc<Ui>) {
     let dialog = gtk::FileDialog::builder()
-        .title("Pilih arsip untuk diuji")
+        .title(t("Pilih arsip untuk diuji"))
         .build();
     let win = ui.window.clone();
     let ui = ui.clone();
@@ -3527,12 +3661,12 @@ fn show_log(ui: &Rc<Ui>) {
     let text = {
         let log = ui.log.borrow();
         if log.is_empty() {
-            "(Belum ada aktivitas)".to_string()
+            t("(Belum ada aktivitas)").to_string()
         } else {
             log.join("\n")
         }
     };
-    let dialog = adw::MessageDialog::new(Some(&ui.window), Some("Log Aktivitas"), None);
+    let dialog = adw::MessageDialog::new(Some(&ui.window), Some(t("Log Aktivitas")), None);
 
     let label = gtk::Label::builder()
         .label(&text)
@@ -3548,14 +3682,14 @@ fn show_log(ui: &Rc<Ui>) {
         .build();
     dialog.set_extra_child(Some(&icon_with("zippy-info", &scroll)));
 
-    dialog.add_response("clear", "Bersihkan");
-    dialog.add_response("ok", "Tutup");
+    dialog.add_response("clear", t("Bersihkan"));
+    dialog.add_response("ok", t("Tutup"));
     dialog.set_default_response(Some("ok"));
     let ui = ui.clone();
     dialog.connect_response(None, move |_, resp| {
         if resp == "clear" {
             ui.log.borrow_mut().clear();
-            show_toast(&ui, "Log dibersihkan");
+            show_toast(&ui, t("Log dibersihkan"));
         }
     });
     dialog.present();
@@ -3570,20 +3704,26 @@ fn trash_archive_after_extract(ui: &Rc<Ui>, archive: &Path) {
                 ui,
                 &format!("Arsip dipindah ke Trash: {}", archive.display()),
             );
-            show_toast(ui, "Arsip dipindahkan ke Trash");
+            show_toast(ui, t("Arsip dipindahkan ke Trash"));
             if ui.current.borrow().as_deref() == Some(archive) {
                 close_archive(ui);
             }
         }
-        Err(e) => warn(ui, &format!("Gagal memindah arsip ke Trash: {e}")),
+        Err(e) => warn(
+            ui,
+            &tf(
+                "Gagal memindah arsip ke Trash: {}",
+                &[e.to_string().as_str()],
+            ),
+        ),
     }
 }
 
-/// Toast dengan tombol "Buka Folder" yang membuka `dir` di file manager.
+/// Toast dengan tombol t("Buka Folder") yang membuka `dir` di file manager.
 fn show_toast_open_folder(ui: &Rc<Ui>, msg: &str, dir: PathBuf) {
     let toast = adw::Toast::builder()
         .title(msg)
-        .button_label("Buka Folder")
+        .button_label(t("Buka Folder"))
         .build();
     let ui2 = ui.clone();
     toast.connect_button_clicked(move |_| {

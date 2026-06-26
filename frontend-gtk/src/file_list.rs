@@ -12,6 +12,8 @@ use gtk4::subclass::prelude::*;
 
 use std::cell::{Cell, RefCell};
 
+use crate::i18n::{t, tf};
+
 // ---------------------------------------------------------------------------
 // EntryObject — satu baris
 // ---------------------------------------------------------------------------
@@ -130,17 +132,17 @@ pub fn build() -> FileListView {
 
     // Kolom Nama: ikon + label.
     column_view.append_column(&name_column());
-    column_view.append_column(&text_column("Ukuran", true, false, |e| {
+    column_view.append_column(&text_column(t("Ukuran"), true, false, |e| {
         size_cell(e.size(), e)
     }));
-    column_view.append_column(&text_column("Packed", true, false, |e| {
+    column_view.append_column(&text_column(t("Packed"), true, false, |e| {
         size_cell(e.packed(), e)
     }));
-    column_view.append_column(&text_column("Tipe", false, false, |e| {
+    column_view.append_column(&text_column(t("Tipe"), false, false, |e| {
         type_label(&e.name(), e.is_dir() || e.is_parent())
     }));
-    column_view.append_column(&text_column("Modified", false, false, |e| e.modified()));
-    column_view.append_column(&text_column("CRC32", false, true, |e| e.crc_hex()));
+    column_view.append_column(&text_column(t("Modified"), false, false, |e| e.modified()));
+    column_view.append_column(&text_column(t("CRC32"), false, true, |e| e.crc_hex()));
 
     let widget = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Automatic)
@@ -187,7 +189,7 @@ fn name_column() -> gtk::ColumnViewColumn {
     });
 
     gtk::ColumnViewColumn::builder()
-        .title("Nama")
+        .title(crate::i18n::t("Nama"))
         .factory(&factory)
         .expand(true)
         .resizable(true)
@@ -247,14 +249,14 @@ pub fn group_thousands(n: u64) -> String {
 /// Label tipe gaya WinRAR dari ekstensi.
 fn type_label(name: &str, is_dir: bool) -> String {
     if is_dir {
-        return "Folder".to_string();
+        return t("Folder").to_string();
     }
     let ext = name.rsplit('.').next().filter(|e| *e != name).unwrap_or("");
     match ext.to_ascii_lowercase().as_str() {
-        "exe" | "dll" | "so" | "bin" => "Application".to_string(),
-        "txt" | "md" | "log" => "Text Document".to_string(),
-        "html" | "htm" => "File HTML".to_string(),
-        "" => "File".to_string(),
-        other => format!("File {}", other.to_uppercase()),
+        "exe" | "dll" | "so" | "bin" => t("Aplikasi").to_string(),
+        "txt" | "md" | "log" => t("Dokumen Teks").to_string(),
+        "html" | "htm" => t("File HTML").to_string(),
+        "" => t("Berkas").to_string(),
+        other => tf("File {}", &[other.to_uppercase().as_str()]),
     }
 }
