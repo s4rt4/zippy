@@ -20,3 +20,53 @@ async-channel = "2"
 anyhow.workspace             = true
 tracing.workspace            = true
 tracing-subscriber.workspace = true
+
+# ---------------------------------------------------------------------------
+# Packaging (.deb via cargo-deb, .rpm via cargo-generate-rpm)
+# ---------------------------------------------------------------------------
+# Aset bersama dipasang sistem-wide (padanan ./data/install.sh, tapi ke
+# /usr bukan ~/.local). Runtime tools (7z/zip/unzip/clamav/par2) = rekomendasi,
+# bukan wajib — Zippy mendeteksi ketiadaannya secara anggun.
+
+[package.metadata.deb]
+maintainer = "s4rt4 <surat.sarta@gmail.com>"
+copyright = "2026 s4rt4 — MIT"
+license-file = ["../LICENSE", "0"]
+section = "utils"
+priority = "optional"
+extended-description = """\
+Archive manager ringan untuk Linux (GTK4 + libadwaita) bergaya WinRAR.
+Buka, extract, dan buat arsip ZIP (AES-256), 7z, RAR, dan TAR (.gz/.bz2/.xz/.zst),
+lengkap dengan integrasi context-menu file manager dan UI dua bahasa (ID/EN)."""
+# Fedora tak punya DB dpkg untuk dpkg-shlibdeps, jadi deps ditulis eksplisit.
+depends = "libc6, libgtk-4-1 (>= 4.10), libadwaita-1-0 (>= 1.4)"
+recommends = "p7zip-full, zip, unzip, clamav, par2"
+assets = [
+    ["../target/release/zippy", "usr/bin/", "755"],
+    ["../data/io.github.s4rt4.Zippy.desktop", "usr/share/applications/io.github.s4rt4.Zippy.desktop", "644"],
+    ["../data/icons/io.github.s4rt4.Zippy.svg", "usr/share/icons/hicolor/scalable/apps/io.github.s4rt4.Zippy.svg", "644"],
+    ["../data/zippy-nautilus.py", "usr/share/nautilus-python/extensions/zippy-nautilus.py", "644"],
+    ["../README.md", "usr/share/doc/zippy/README.md", "644"],
+    ["../LICENSE", "usr/share/doc/zippy/LICENSE", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Archive manager ringan untuk Linux (GTK4 + libadwaita)"
+# find-requires (native di Fedora) menambah dep pustaka bersama otomatis.
+auto-req = "auto"
+assets = [
+    { source = "target/release/zippy", dest = "/usr/bin/zippy", mode = "755" },
+    { source = "data/io.github.s4rt4.Zippy.desktop", dest = "/usr/share/applications/io.github.s4rt4.Zippy.desktop", mode = "644" },
+    { source = "data/icons/io.github.s4rt4.Zippy.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.s4rt4.Zippy.svg", mode = "644" },
+    { source = "data/zippy-nautilus.py", dest = "/usr/share/nautilus-python/extensions/zippy-nautilus.py", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/zippy/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/zippy/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.recommends]
+p7zip = "*"
+p7zip-plugins = "*"
+zip = "*"
+unzip = "*"
+clamav = "*"
+par2cmdline = "*"
