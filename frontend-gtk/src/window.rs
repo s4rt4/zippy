@@ -3394,13 +3394,18 @@ fn show_profiles_manager(ui: &Rc<Ui>) {
         .build();
     page.add(&list_group);
 
+    // Lacak baris yang kita tambahkan sendiri. `PreferencesGroup::first_child()`
+    // mengembalikan widget internal grup (bukan baris), jadi mengulanginya untuk
+    // membersihkan akan berputar tanpa henti dan membekukan UI.
+    let rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::new(RefCell::new(Vec::new()));
     let refresh = {
         let ui = ui.clone();
         let list_group = list_group.clone();
+        let rows = rows.clone();
         Rc::new(move || {
-            // Bersihkan baris lama.
-            while let Some(child) = list_group.first_child() {
-                list_group.remove(&child);
+            // Bersihkan baris lama yang kita tambahkan.
+            for row in rows.borrow_mut().drain(..) {
+                list_group.remove(&row);
             }
             for (name, level) in ui.config.borrow().profiles.clone() {
                 let row = adw::ActionRow::builder()
@@ -3417,16 +3422,19 @@ fn show_profiles_manager(ui: &Rc<Ui>) {
                     let name = name.clone();
                     let lg = list_group.clone();
                     let row = row.clone();
+                    let rows = rows.clone();
                     move |_| {
                         let mut c = ui.config.borrow_mut();
                         c.profiles.retain(|(n, _)| n != &name);
                         c.save();
                         drop(c);
+                        rows.borrow_mut().retain(|r| r != &row);
                         lg.remove(&row);
                     }
                 });
                 row.add_suffix(&del);
                 list_group.add(&row);
+                rows.borrow_mut().push(row);
             }
         })
     };
